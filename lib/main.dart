@@ -11,6 +11,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
+import 'screens.dart';
+
 /// Little-endian signed 16-bit PCM to normalized float samples in [-1, 1).
 Float32List pcm16ToFloat32(Uint8List bytes) {
   final samples = Float32List(bytes.length ~/ 2);
@@ -30,37 +32,43 @@ void main() {
   runApp(const AlphaVoiceApp());
 }
 
-// DESIGN.md §3 palette, mapped onto Material roles so widgets read it from Theme.
-// Light only: the app ignores the phone's dark mode.
+// Night voice mode: high-contrast dark with one mint accent, for glancing
+// at while driving. Dark only: the app ignores the phone's theme setting.
 ThemeData _theme() {
   const scheme = ColorScheme(
-    brightness: Brightness.light,
-    primary: Color(0xff2f5d4e),
-    onPrimary: Color(0xffffffff),
-    primaryContainer: Color(0xffe6eee7),
-    onPrimaryContainer: Color(0xff1d3a30),
-    secondary: Color(0xff1f3a31),
-    onSecondary: Color(0xffffffff),
-    tertiary: Color(0xff9bbfa6),
-    onTertiary: Color(0xff1d3a30),
-    error: Color(0xffb33a38),
-    onError: Color(0xffffffff),
-    surface: Color(0xfff4f3ef),
-    onSurface: Color(0xff1f2622),
-    onSurfaceVariant: Color(0xff5b6660),
-    surfaceContainer: Color(0xffffffff),
-    outline: Color(0xff7a867f),
-    outlineVariant: Color(0xffdde2da),
+    brightness: Brightness.dark,
+    primary: Color(0xffa8f5d0),
+    onPrimary: Color(0xff0d111b),
+    primaryContainer: Color(0xff1b3a33),
+    onPrimaryContainer: Color(0xffa8f5d0),
+    secondary: Color(0xffa8f5d0),
+    onSecondary: Color(0xff0d111b),
+    tertiary: Color(0xfff2a93b),
+    onTertiary: Color(0xff1d1407),
+    error: Color(0xffff7a6b),
+    onError: Color(0xff2a0b07),
+    surface: Color(0xff0d111b),
+    onSurface: Color(0xfff5f7fa),
+    onSurfaceVariant: Color(0xff9ba7b7),
+    surfaceContainer: Color(0xff151b26),
+    outline: Color(0xff5d6878),
+    outlineVariant: Color(0xff252e3d),
   );
   return ThemeData(
     useMaterial3: true,
     colorScheme: scheme,
     scaffoldBackgroundColor: scheme.surface,
+    appBarTheme: const AppBarTheme(
+      backgroundColor: Color(0xff0d111b),
+      surfaceTintColor: Colors.transparent,
+    ),
+    drawerTheme: const DrawerThemeData(backgroundColor: Color(0xff0d111b)),
+    snackBarTheme: const SnackBarThemeData(behavior: SnackBarBehavior.floating),
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
         minimumSize: const Size.fromHeight(56),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        textStyle: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+        textStyle: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
       ),
     ),
   );
@@ -278,8 +286,11 @@ class _SpeechScreenState extends State<SpeechScreen>
     vsync: this,
     duration: const Duration(milliseconds: 1600),
   );
-  final _scroll = ScrollController();
-  String _finalized = '';
+  final _scaffold = GlobalKey<ScaffoldState>();
+
+  /// What the user has said since the mic went on.
+  String _heard = '';
+  bool _opening = false;
   String _partial = '';
   int _lastPaintMs = 0;
   String _status = '모델을 준비하고 있어요';
@@ -327,6 +338,12 @@ class _SpeechScreenState extends State<SpeechScreen>
         groupNotificationId: model.name,
       );
     }
+    // Android stops background workers after 9 minutes and pauses the file;
+    // the group notification counts a paused file as finished and said
+    // "다 받았어요" mid-download. A foreground service has no such limit.
+    await downloader.configure(
+      androidConfig: [(bd.Config.runInForeground, bd.Config.always)],
+    );
     // Picks up downloads that continued or finished while the app was closed.
     // Killed tasks are restarted by _resumeDownload, not the package, so a
     // file never downloads twice at once.
@@ -340,6 +357,26 @@ class _SpeechScreenState extends State<SpeechScreen>
       if (await (await _pendingMark(model)).exists()) {
         await _resumeDownload(model);
         break;
+      }
+    }
+    if (_downloadingModel == null) await _deleteStaleTempFiles();
+  }
+
+  /// A download killed mid-file (app update, force stop) leaves its partial
+  /// temp file behind; on one test phone these added up to over 1 GB. Only
+  /// runs when nothing is downloading, so no live file is touched.
+  Future<void> _deleteStaleTempFiles() async {
+    for (final dir in [
+      await getApplicationSupportDirectory(),
+      await getTemporaryDirectory(),
+    ]) {
+      await for (final entry in dir.list()) {
+        if (entry is File &&
+            entry.uri.pathSegments.last.startsWith(
+              'com.bbflight.background_downloader',
+            )) {
+          await entry.delete();
+        }
       }
     }
   }
@@ -525,6 +562,17 @@ class _SpeechScreenState extends State<SpeechScreen>
     for (final task in model.tasks) {
       if (await _fileDone(task)) _fileProgress[task.metaData] = 1;
     }
+    // Start from the last known progress, so reopening the app doesn't drop
+    // the bar back to the finished files only.
+    final records = await bd.FileDownloader().database.allRecords(
+      group: model.name,
+    );
+    for (final record in records) {
+      final name = record.task.metaData;
+      if (_fileProgress[name] != 1 && record.progress > 0) {
+        _fileProgress[name] = record.progress.clamp(0, 0.99);
+      }
+    }
   }
 
   double get _downloadFraction {
@@ -622,6 +670,11 @@ class _SpeechScreenState extends State<SpeechScreen>
       case bd.TaskProgressUpdate(:final progress):
         if (progress < 0) return; // Negative values are status codes.
         final before = (_downloadFraction * 100).floor();
+        // Never step back: a resume or retry restarts the reported progress
+        // at 0 (or a stale value), which made the bar jump down and up.
+        // ponytail: a true restart from zero shows a stalled bar until it
+        // catches up; fine since that only happens after a failed resume.
+        if (progress <= (_fileProgress[name] ?? 0)) return;
         _fileProgress[name] = progress;
         if ((_downloadFraction * 100).floor() != before) setState(() {});
       case bd.TaskStatusUpdate(:final status):
@@ -685,7 +738,7 @@ class _SpeechScreenState extends State<SpeechScreen>
       _model = model;
       _busy = true;
       _error = false;
-      _finalized = '';
+      _heard = '';
       _partial = '';
       _status = '모델을 준비하고 있어요';
     });
@@ -719,7 +772,7 @@ class _SpeechScreenState extends State<SpeechScreen>
         setState(() {
           _listening = false;
           _partial = (_offline?.pending ?? 0) > 0 ? '…' : '';
-          _status = '받아쓰기를 마쳤어요';
+          _status = _heard.isEmpty && _partial.isEmpty ? _missed : '말할 준비가 됐어요';
         });
       }
       return;
@@ -742,7 +795,7 @@ class _SpeechScreenState extends State<SpeechScreen>
       setState(() {
         _listening = true;
         _error = false;
-        _finalized = '';
+        _heard = '';
         _partial = '';
         _status = '듣고 있어요';
       });
@@ -828,69 +881,272 @@ class _SpeechScreenState extends State<SpeechScreen>
     if (sent) _paint('…');
   }
 
+  // Qwen3 has no language setting and sometimes answers in Chinese or
+  // Japanese; drop Han and kana so only Korean (and Latin) reaches the user.
+  // A sentence that was all Chinese becomes empty and counts as not heard.
+  static final _notKorean = RegExp(
+    r'[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3000-\u303f\uff01-\uff0f]+',
+  );
+  static String _koreanOnly(String text) =>
+      text.replaceAll(_notKorean, ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
+
   void _appendFinal(String text) {
+    text = _koreanOnly(text);
     if (text.isEmpty) return;
-    _finalized = '$_finalized$text ';
+    _heard = _heard.isEmpty ? text : '$_heard $text';
+    _checkCommand();
+  }
+
+  // ponytail: keyword match, not intent parsing; enough for "어, 해줘" /
+  // "나중에" until a real assistant backend answers.
+  static const _missed = '잘 듣지 못했어요. 다시 말씀해 주세요.';
+  // A bare "응"/"네" only counts as the whole answer; inside other words it
+  // fired on background chatter.
+  static final _yes = RegExp(r'읽어|읊어|해줘|해 줘|그래|좋아|^\s*(응|네|예|어)\s*[.!?]?\s*$');
+  static final _later = RegExp(r'나중|그만|취소');
+
+  void _checkCommand() {
+    final said = '$_heard $_partial';
+    if (!_listening || _opening) return;
+    if (_later.hasMatch(said)) {
+      _opening = true;
+      _toggleListening().whenComplete(() => _opening = false);
+    } else if (_yes.hasMatch(said)) {
+      _openBriefing();
+    }
+  }
+
+  Future<void> _openBriefing() async {
+    if (_opening) return;
+    _opening = true;
+    try {
+      if (_listening) await _toggleListening();
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const BriefingScreen()),
+      );
+    } finally {
+      _opening = false;
+    }
+    if (mounted) {
+      setState(() {
+        _heard = '';
+        _partial = '';
+        _status = '말할 준비가 됐어요';
+      });
+    }
   }
 
   void _paint(String partial) {
     if (!mounted) return;
     _lastPaintMs = DateTime.now().millisecondsSinceEpoch;
-    setState(() => _partial = partial);
-    _followTail();
+    setState(() => _partial = partial == '…' ? partial : _koreanOnly(partial));
+    _checkCommand();
   }
-
-  // Keep the newest words in view as the transcript grows.
-  void _followTail() => WidgetsBinding.instance.addPostFrameCallback((_) {
-    if (_scroll.hasClients) _scroll.jumpTo(_scroll.position.maxScrollExtent);
-  });
 
   @override
   void dispose() {
     _downloadSub?.cancel();
     _pulse.dispose();
-    _scroll.dispose();
     _audioSub?.cancel();
     _recorder.dispose();
     _freeModels();
     super.dispose();
   }
 
-  static const _serif = TextStyle(fontFamily: 'GowunBatang');
+  void _soon(String what) {
+    Navigator.pop(context); // Close the drawer first.
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('$what은 준비 중이에요 (목업)')));
+  }
 
-  Widget _sheetText(ColorScheme colors, bool hasText) => hasText
-      ? SingleChildScrollView(
-          controller: _scroll,
-          padding: const EdgeInsets.fromLTRB(20, 22, 22, 22),
-          // Settled words in full ink; words still being recognised stay
-          // lighter until they settle.
-          child: Text.rich(
-            TextSpan(
-              style: _serif.copyWith(fontSize: 21, height: 1.75),
-              children: [
-                TextSpan(
-                  text: _finalized,
-                  style: TextStyle(color: colors.onSurface),
+  void _pickModel() {
+    Navigator.pop(context);
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        final colors = Theme.of(context).colorScheme;
+        final locked = _busy || _listening;
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+                child: Text(
+                  locked ? '듣는 중에는 바꿀 수 없어요' : '음성 모델',
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
-                TextSpan(
-                  text: _partial,
-                  style: TextStyle(color: colors.onSurfaceVariant),
+              ),
+              for (final m in SpeechModel.values)
+                ListTile(
+                  enabled: !locked,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 24),
+                  leading: Icon(
+                    m == _model
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_off,
+                    color: m == _model ? colors.primary : colors.outline,
+                  ),
+                  title: Text(
+                    '${m.label} · ${m.title}',
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  subtitle: Text('${m.blurb} · ${m.size}'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _switchModel(m);
+                  },
                 ),
-              ],
-            ),
-          ),
-        )
-      : Padding(
-          padding: const EdgeInsets.fromLTRB(20, 22, 22, 22),
-          child: Text(
-            _listening ? '말씀하시면 여기에 바로 적혀요' : '마이크를 누르고 말하면 여기에 적혀요',
-            style: _serif.copyWith(
-              fontSize: 17,
-              height: 1.75,
-              color: colors.onSurfaceVariant,
-            ),
+              const SizedBox(height: 12),
+            ],
           ),
         );
+      },
+    );
+  }
+
+  Widget _drawer(ColorScheme colors) {
+    Widget item(
+      String label, {
+      bool selected = false,
+      IconData? icon,
+      String? sub,
+      required VoidCallback onTap,
+    }) => Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: ListTile(
+        selected: selected,
+        selectedTileColor: colors.primaryContainer,
+        selectedColor: colors.onPrimaryContainer,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        leading: selected
+            ? Icon(Icons.circle, size: 10, color: colors.primary)
+            : icon == null
+            ? null
+            : Icon(icon, color: colors.onSurfaceVariant),
+        minLeadingWidth: 10,
+        title: Text(
+          label,
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+        ),
+        subtitle: sub == null ? null : Text(sub),
+        onTap: onTap,
+      ),
+    );
+    return Drawer(
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 6),
+                child: _Brand(),
+              ),
+              Divider(height: 28, color: colors.outlineVariant),
+              ListTile(
+                leading: CircleAvatar(
+                  backgroundColor: colors.surfaceContainer,
+                  child: const Text('민'),
+                ),
+                title: const Text(
+                  '민지님',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+                subtitle: const Text('개인 메일 공간'),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 6),
+                child: Text(
+                  '메뉴',
+                  style: TextStyle(color: colors.onSurfaceVariant),
+                ),
+              ),
+              item('음성 홈', selected: true, onTap: () => Navigator.pop(context)),
+              item(
+                '음성 모델',
+                icon: Icons.graphic_eq_rounded,
+                sub: _downloadingModel != null
+                    ? '${_downloadingModel!.label} 내려받는 중 '
+                          '${(_downloadFraction * 100).floor()}%'
+                    : '${_model.label} · ${_model.title}',
+                onTap: _pickModel,
+              ),
+              item('메일 계정', onTap: () => _soon('메일 계정')),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3),
+                child: OutlinedButton.icon(
+                  onPressed: () => _soon('메일 연동'),
+                  icon: const Icon(Icons.add_rounded),
+                  label: const Text('메일 연동하기'),
+                  style: OutlinedButton.styleFrom(
+                    alignment: Alignment.centerLeft,
+                    minimumSize: const Size.fromHeight(52),
+                    foregroundColor: colors.primary,
+                    backgroundColor: colors.primaryContainer.withValues(
+                      alpha: 0.4,
+                    ),
+                    side: BorderSide(
+                      color: colors.primary.withValues(alpha: 0.5),
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    textStyle: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ),
+              item('히스토리', onTap: () => _soon('히스토리')),
+              item('앱 설정', onTap: () => _soon('앱 설정')),
+              item(
+                '오프라인 화면 미리보기',
+                icon: Icons.cloud_off_rounded,
+                onTap: () {
+                  Navigator.pop(context);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const OfflineScreen()),
+                  );
+                },
+              ),
+              const Spacer(),
+              VoiceCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      '음성 프라이버시',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '음성 원본은 기기 안에서 인식해요.',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -901,235 +1157,255 @@ class _SpeechScreenState extends State<SpeechScreen>
     } else {
       _pulse.stop();
     }
-    final hasText = _finalized.isNotEmpty || _partial.isNotEmpty;
     final needsModel = !_busy && !_loaded;
-    final hint = _error
-        ? null
-        : _busy
-        ? '처음 한 번만 조금 걸려요'
-        : needsModel
-        ? '${_model.size}를 한 번 내려받아요'
-        : _listening
-        ? '잠시 말을 멈추면 문장이 확정돼요'
-        : '마이크는 말하는 동안에만 켜져요';
     final onMic = _busy || (needsModel && _downloadingModel != null)
         ? null
         : _loaded
         ? _toggleListening
         : () => _requestDownload(_model);
-
-    // 1:3:6 — forest green primary 1, deep green header band 3, warm paper page 6.
-    const headerInk = Colors.white;
-    const lightMint = Color(0xffcfe0d3);
-    const mint = Color(0xff9bbfa6);
-    const headerTeal = Color(0xff1f3a31);
+    // Beside the mic: what tapping it does, and what to say.
+    final (micTitle, micHint) = _error
+        ? (_status, '다시 눌러 주세요')
+        : _busy
+        ? (_status, '처음 한 번만 조금 걸려요')
+        : needsModel
+        ? ('${_model.label} 모델 내려받기', '${_model.size}를 한 번 내려받아요')
+        : _listening
+        ? ('듣고 있어요', '말씀해 주세요')
+        : _partial == '…'
+        ? ('말씀을 확인하고 있어요', '잠시만요')
+        : ('눌러서 말하기', _status == _missed ? _missed : '"오늘 메일 온 거 읊어줘"');
+    final heard = '$_heard $_partial'.trim();
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle.light.copyWith(
         systemNavigationBarColor: colors.surface,
-        systemNavigationBarIconBrightness: Brightness.dark,
+        systemNavigationBarIconBrightness: Brightness.light,
       ),
       child: Scaffold(
-        backgroundColor: colors.surface,
-        body: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Container(
-              color: headerTeal,
-              child: SafeArea(
-                bottom: false,
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 18),
+        key: _scaffold,
+        drawer: _drawer(colors),
+        body: SafeArea(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+            children: [
+              Row(
+                children: [
+                  IconButton.outlined(
+                    tooltip: '메뉴',
+                    onPressed: () => _scaffold.currentState?.openDrawer(),
+                    icon: const Icon(Icons.menu_rounded),
+                    style: IconButton.styleFrom(
+                      side: BorderSide(color: colors.outlineVariant),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  const _Brand(),
+                ],
+              ),
+              const SizedBox(height: 28),
+              if (_downloadingModel ?? _failedDownload case final model?) ...[
+                _DownloadBanner(
+                  label: model.label,
+                  progress: _downloadFraction,
+                  filesDone: _fileProgress.values.where((p) => p == 1).length,
+                  filesTotal: model.files.length,
+                  failed: _downloadingModel == null,
+                  onCancel: _cancelDownload,
+                  onRetry: () => _startDownload(model),
+                  onDismiss: () => setState(() => _failedDownload = null),
+                ),
+                const SizedBox(height: 20),
+              ],
+              // 01 voice home ⇄ 02 listening share this screen.
+              if (_listening) ...[
+                const ScreenTitle('네이버메일', '안 읽은 메일 3건'),
+                const SizedBox(height: 18),
+                VoiceCard(
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // The logo's mint underline, under the chosen model.
-                      DecoratedBox(
-                        decoration: const BoxDecoration(
-                          border: Border(
-                            bottom: BorderSide(color: mint, width: 3),
-                          ),
-                        ),
-                        child: DropdownButton<SpeechModel>(
-                          value: _model,
-                          isExpanded: true,
-                          underline: const SizedBox.shrink(),
-                          itemHeight: 56,
-                          borderRadius: BorderRadius.circular(14),
-                          dropdownColor: colors.surfaceContainer,
-                          iconEnabledColor: mint,
-                          iconDisabledColor: lightMint,
-                          onChanged: _busy || _listening
-                              ? null
-                              : (m) => _switchModel(m!),
-                          // Closed: on the dark header. Open: on white.
-                          selectedItemBuilder: (_) => [
-                            for (final m in SpeechModel.values)
-                              _ModelRow(m, main: headerInk, accent: mint),
-                          ],
-                          items: [
-                            for (final m in SpeechModel.values)
-                              DropdownMenuItem(
-                                value: m,
-                                child: _ModelRow(
-                                  m,
-                                  main: colors.onSurface,
-                                  accent: colors.primary,
-                                ),
-                              ),
-                          ],
+                      const Text(
+                        '읽어드릴까요?',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w700,
                         ),
                       ),
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 4),
                       Text(
-                        _model.blurb,
-                        style: const TextStyle(fontSize: 13, color: lightMint),
+                        '"어, 해줘" 또는 "나중에"',
+                        style: TextStyle(color: colors.onSurfaceVariant),
                       ),
                     ],
                   ),
                 ),
-              ),
-            ),
-            Expanded(
-              child: SafeArea(
-                top: false,
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
+              ] else ...[
+                const ScreenTitle('운전 중에도', '메일을 듣고\n말로 답장하세요'),
+                const SizedBox(height: 18),
+                VoiceCard(
+                  onTap: _openBriefing,
+                  child: Row(
                     children: [
-                      if (_downloadingModel ?? _failedDownload
-                          case final model?) ...[
-                        _DownloadBanner(
-                          label: model.label,
-                          progress: _downloadFraction,
-                          filesDone: _fileProgress.values
-                              .where((p) => p == 1)
-                              .length,
-                          filesTotal: model.files.length,
-                          failed: _downloadingModel == null,
-                          onCancel: _cancelDownload,
-                          onRetry: () => _startDownload(model),
-                          onDismiss: () =>
-                              setState(() => _failedDownload = null),
-                        ),
-                        const SizedBox(height: 12),
-                      ],
-                      Expanded(
-                        // A sheet of letter paper; while listening a teal
-                        // margin rule marks where the words are going.
-                        child: Container(
-                          clipBehavior: Clip.antiAlias,
-                          decoration: BoxDecoration(
-                            color: colors.surfaceContainer,
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              AnimatedContainer(
-                                duration: reduceMotion
-                                    ? Duration.zero
-                                    : const Duration(milliseconds: 200),
-                                width: 4,
-                                color: _listening
-                                    ? colors.primary
-                                    : Colors.transparent,
-                              ),
-                              Expanded(child: _sheetText(colors, hasText)),
-                            ],
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Center(
-                        child: _MicButton(
-                          pulse: _pulse,
-                          listening: _listening,
-                          busy: _busy,
-                          icon: needsModel
-                              ? Icons.download_rounded
-                              : _listening
-                              ? Icons.stop_rounded
-                              : Icons.mic_rounded,
-                          label: needsModel
-                              ? '${_model.label} 모델 내려받기'
-                              : _listening
-                              ? '받아쓰기 멈추기'
-                              : '말하기 시작',
-                          onPressed: onMic,
-                        ),
-                      ),
-                      Semantics(
-                        liveRegion: true,
+                      CircleAvatar(
+                        radius: 14,
+                        backgroundColor: colors.primaryContainer,
                         child: Text(
-                          _status,
-                          textAlign: TextAlign.center,
+                          'N',
                           style: TextStyle(
-                            fontSize: 20,
-                            height: 1.3,
-                            fontWeight: FontWeight.w600,
-                            color: _error ? colors.error : colors.onSurface,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w800,
+                            color: colors.primary,
                           ),
                         ),
                       ),
-                      if (hint != null) ...[
-                        const SizedBox(height: 4),
-                        Text(
-                          hint,
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontSize: 14,
-                            height: 1.4,
-                            color: colors.onSurfaceVariant,
-                          ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              '네이버메일 · 3건',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            Text(
+                              '안 읽은 메일',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: colors.onSurfaceVariant,
+                              ),
+                            ),
+                          ],
                         ),
-                      ],
+                      ),
+                      Icon(
+                        Icons.chevron_right_rounded,
+                        color: colors.onSurfaceVariant,
+                      ),
                     ],
                   ),
                 ),
+              ],
+              const SizedBox(height: 28),
+              Row(
+                children: [
+                  _MicButton(
+                    pulse: _pulse,
+                    listening: _listening,
+                    busy: _busy,
+                    icon: needsModel
+                        ? Icons.download_rounded
+                        : _listening
+                        ? Icons.stop_rounded
+                        : Icons.mic_none_rounded,
+                    label: needsModel
+                        ? '${_model.label} 모델 내려받기'
+                        : _listening
+                        ? '듣기 멈추기'
+                        : '말하기 시작',
+                    onPressed: onMic,
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Semantics(
+                      liveRegion: true,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            micTitle,
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w800,
+                              color: _error ? colors.error : colors.primary,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            micHint,
+                            style: TextStyle(
+                              fontSize: 15,
+                              color: colors.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
               ),
-            ),
-          ],
+              if (_listening || heard.isNotEmpty) ...[
+                const SizedBox(height: 24),
+                VoiceCard(
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '인식한 말',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: colors.onSurfaceVariant,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              heard.isEmpty ? '…' : '“$heard”',
+                              style: const TextStyle(
+                                fontSize: 22,
+                                height: 1.4,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (_listening)
+                        Icon(Icons.circle, size: 12, color: colors.primary),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  '음성은 기기 안에서 인식합니다',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
       ),
     );
   }
 }
 
-/// Model name on the left, when to pick it on the right.
-class _ModelRow extends StatelessWidget {
-  const _ModelRow(this.model, {required this.main, required this.accent});
+/// Logo lockup, shared by the home bar and the drawer.
+class _Brand extends StatelessWidget {
+  const _Brand();
 
-  final SpeechModel model;
-  final Color main;
-  final Color accent;
-
+  // Mint lockup from design/logo (export/horizontal, mono #A8F5D0).
   @override
-  Widget build(BuildContext context) => Row(
-    children: [
-      Text(
-        model.label,
-        style: TextStyle(
-          fontSize: 17,
-          fontWeight: FontWeight.w600,
-          color: main,
-        ),
-      ),
-      const SizedBox(width: 12),
-      Expanded(
-        child: Text(
-          '${model.recommend} 추천',
-          textAlign: TextAlign.end,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(fontSize: 13, color: accent),
-        ),
-      ),
-    ],
+  Widget build(BuildContext context) => Image.asset(
+    'assets/brand/logo-horizontal.png',
+    height: 34,
+    semanticLabel: 'Alpha-mail',
   );
 }
 
-/// The mic as the logo's teal tile; a mint outline ripples out while listening.
+/// Round flat mint mic. Idle: a hairline ring like the cards' borders. Listening: rings keep
+/// spreading out, so "it hears me" reads at a glance; with system animations
+/// off the rings stay still and the label carries the state.
 class _MicButton extends StatelessWidget {
   const _MicButton({
     required this.pulse,
@@ -1147,45 +1423,28 @@ class _MicButton extends StatelessWidget {
   final String label;
   final VoidCallback? onPressed;
 
-  static const _size = 88.0;
-  // Same corner ratio and gradient as the logo tile (rx 62 on 224).
-  static const _radius = _size * 62 / 224;
-  static const _tile = LinearGradient(
-    begin: Alignment.topLeft,
-    end: Alignment.bottomRight,
-    colors: [Color(0xff3a6d5b), Color(0xff244a3e)],
-  );
-  static const _mint = Color(0xff9bbfa6);
-  static const _paper = Color(0xfff4f3ef);
+  static const _size = 76.0;
+  static const _mint = Color(0xffa8f5d0);
+  static const _ink = Color(0xff0d111b);
 
   @override
   Widget build(BuildContext context) {
-    final shape = RoundedRectangleBorder(
-      borderRadius: BorderRadius.circular(_radius),
-    );
     return SizedBox.square(
-      dimension: _size * 1.5,
+      dimension: _size * 1.6,
       child: Stack(
         alignment: Alignment.center,
         children: [
-          if (listening)
-            AnimatedBuilder(
-              animation: pulse,
-              builder: (context, _) {
-                final grow = 1 + 0.4 * pulse.value;
-                return Container(
-                  width: _size * grow,
-                  height: _size * grow,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(_radius * grow),
-                    border: Border.all(
-                      color: _mint.withValues(alpha: 1 - pulse.value),
-                      width: 3,
-                    ),
-                  ),
-                );
-              },
+          AnimatedBuilder(
+            animation: pulse,
+            builder: (context, _) => CustomPaint(
+              size: const Size.square(_size * 1.6),
+              painter: _RingsPainter(
+                listening: listening,
+                t: pulse.value,
+                inner: _size / 2,
+              ),
             ),
+          ),
           Semantics(
             button: true,
             label: label,
@@ -1193,22 +1452,30 @@ class _MicButton extends StatelessWidget {
               message: label,
               child: Opacity(
                 opacity: onPressed == null ? 0.4 : 1,
-                child: Ink(
+                child: Container(
                   width: _size,
                   height: _size,
-                  decoration: ShapeDecoration(gradient: _tile, shape: shape),
-                  child: InkWell(
-                    customBorder: shape,
-                    onTap: onPressed,
-                    child: busy
-                        ? const Padding(
-                            padding: EdgeInsets.all(28),
-                            child: CircularProgressIndicator(
-                              strokeWidth: 3,
-                              color: _paper,
-                            ),
-                          )
-                        : Icon(icon, size: 38, color: _paper),
+                  // Flat like the rest of the app: no gradient, no glow.
+                  decoration: const BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: _mint,
+                  ),
+                  child: Material(
+                    type: MaterialType.transparency,
+                    shape: const CircleBorder(),
+                    clipBehavior: Clip.antiAlias,
+                    child: InkWell(
+                      onTap: onPressed,
+                      child: busy
+                          ? const Padding(
+                              padding: EdgeInsets.all(24),
+                              child: CircularProgressIndicator(
+                                strokeWidth: 3,
+                                color: _ink,
+                              ),
+                            )
+                          : Icon(icon, size: 36, color: _ink),
+                    ),
                   ),
                 ),
               ),
@@ -1218,6 +1485,49 @@ class _MicButton extends StatelessWidget {
       ),
     );
   }
+}
+
+class _RingsPainter extends CustomPainter {
+  _RingsPainter({
+    required this.listening,
+    required this.t,
+    required this.inner,
+  });
+
+  final bool listening;
+  final double t;
+  final double inner;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = size.center(Offset.zero);
+    final outer = size.width / 2;
+    final paint = Paint()..style = PaintingStyle.stroke;
+    // Resting: one hairline ring in the cards' border colour.
+    canvas.drawCircle(
+      center,
+      inner + 12,
+      paint
+        ..strokeWidth = 1.5
+        ..color = const Color(0xff252e3d),
+    );
+    if (!listening) return;
+    // Two rings, half a cycle apart, growing from the button edge outward.
+    for (final offset in [0.0, 0.5]) {
+      final p = (t + offset) % 1;
+      canvas.drawCircle(
+        center,
+        inner + 12 + (outer - inner - 12) * p,
+        paint
+          ..strokeWidth = 2
+          ..color = const Color(0xffa8f5d0).withValues(alpha: 0.6 * (1 - p)),
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_RingsPainter old) =>
+      old.t != t || old.listening != listening;
 }
 
 /// Shows the background model download without blocking the current model.

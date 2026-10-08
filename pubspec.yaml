@@ -64,6 +64,7 @@ flutter:
     # Speech models are downloaded at runtime; only the tiny VAD ships in the app.
     - assets/models/vad/silero_vad.onnx
     - assets/fonts/OFL.txt
+    - assets/brand/logo-horizontal.png
   fonts:
     # Transcript serif (OFL, assets/fonts/OFL.txt).
     - family: GowunBatang

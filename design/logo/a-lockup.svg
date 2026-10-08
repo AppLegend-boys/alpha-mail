@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 256">
+  <svg x="0" y="0" width="256" height="256" viewBox="0 0 256 256">  <g fill="none" stroke="#000" stroke-width="28" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M52 216 L128 40 L204 216"/>
+    <path d="M81 152 C98 128 111 128 128 152 C145 176 158 176 175 152"/>
+  </g></svg>
+  <text x="290" y="168" font-family="-apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="112" font-weight="700" letter-spacing="-2">Alpha-mail</text>
+</svg>
