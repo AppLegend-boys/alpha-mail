@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000"><rect width="1000" height="1000" fill="#e9ebef"/>
+<rect x="30" y="30" width="460" height="460" rx="40" fill="#ffffff"/>
+<svg x="80" y="70" width="360" height="360" viewBox="0 0 256 256">
+  <g fill="none" stroke="#000" stroke-width="28" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M52 216 L128 40 L204 216"/>
+    <path d="M81 152 C98 128 111 128 128 152 C145 176 158 176 175 152"/>
+  </g>
+</svg>
+<text x="260" y="470" text-anchor="middle" font-family="-apple-system,Helvetica,Arial" font-size="22" fill="#000" opacity=".7">A · Pulse A</text>
+<rect x="510" y="30" width="460" height="460" rx="40" fill="#ffffff"/>
+<svg x="560" y="70" width="360" height="360" viewBox="0 0 256 256">
+  <g transform="translate(3 -7)" fill="none" stroke="#000" stroke-width="26" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M89.5 184.4 A60 60 0 1 0 58 158 L46.1 202.4 Z"/>
+    <path d="M170 70 V166 Q170 194 206 194"/>
+  </g>
+</svg>
+<text x="740" y="470" text-anchor="middle" font-family="-apple-system,Helvetica,Arial" font-size="22" fill="#000" opacity=".7">B · Talk α</text>
+<rect x="30" y="510" width="460" height="460" rx="40" fill="#0D111B"/>
+<svg x="80" y="550" width="360" height="360" viewBox="0 0 256 256">
+  <g fill="none" stroke="#A8F5D0" stroke-width="28" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M52 216 L128 40 L204 216"/>
+    <path d="M81 152 C98 128 111 128 128 152 C145 176 158 176 175 152"/>
+  </g>
+</svg>
+<text x="260" y="950" text-anchor="middle" font-family="-apple-system,Helvetica,Arial" font-size="22" fill="#A8F5D0" opacity=".7">A · 다크</text>
+<rect x="510" y="510" width="460" height="460" rx="40" fill="#0D111B"/>
+<svg x="560" y="550" width="360" height="360" viewBox="0 0 256 256">
+  <g transform="translate(3 -7)" fill="none" stroke="#A8F5D0" stroke-width="26" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M89.5 184.4 A60 60 0 1 0 58 158 L46.1 202.4 Z"/>
+    <path d="M170 70 V166 Q170 194 206 194"/>
+  </g>
+</svg>
+<text x="740" y="950" text-anchor="middle" font-family="-apple-system,Helvetica,Arial" font-size="22" fill="#A8F5D0" opacity=".7">B · 다크</text>
+</svg>

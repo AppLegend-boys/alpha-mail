@@ -1,0 +1,44 @@
+{
+  "brand": "Alpha-mail",
+  "tagline": "손 대신 목소리로, 메일을 안전하게",
+  "brief": "운전 중에도 메일을 듣고 말로 답장하는 음성 메일 앱. 차분하고 믿을 수 있으며, 손을 쓰지 않아도 되는 느낌.",
+  "adjectives": [
+    "차분한",
+    "믿을 수 있는",
+    "핸즈프리",
+    "명료한"
+  ],
+  "criteria": "봉투·@·마이크 같은 메일/음성 클리셰를 피하고, 16px에서도 읽히며, 다크 테마의 민트 한 색으로 작동할 것.",
+  "industry": "consumer-app",
+  "nav": [
+    "기능",
+    "개인정보",
+    "다운로드"
+  ],
+  "brand_color": "#A8F5D0",
+  "tile_color": "#0D111B",
+  "greyscale": false,
+  "designer": "Alpha-mail",
+  "round": 2,
+  "concepts": [
+    {
+      "name": "Talk α",
+      "symbol": "final/symbol.svg",
+      "lockup": "final/horizontal.svg",
+      "idea": "말풍선이 α의 둥근 몸통이 되는 글자.",
+      "rationale": [
+        "이름(알파)과 기능(말로 하는 메일)을 한 형태에 담음",
+        "같은 둥근 선으로 직접 그린 워드마크와 한 가족",
+        "16px에서도 a로 읽히고, 앱 아이콘에서 말풍선이 드러남"
+      ],
+      "symbol_on_tile": "export/symbol/alpha-mail-symbol-mono-a8f5d0.svg",
+      "lockup_on_dark": "export/horizontal/alpha-mail-horizontal-mono-a8f5d0.svg"
+    }
+  ],
+  "recommendation": "Talk α — 민트(#A8F5D0)를 잉크(#0D111B) 위에 쓰는 것이 기본. 밝은 배경에서는 딥 민트(#1E7A5A).",
+  "next_steps": [
+    "상표 검색",
+    "앱 런처 아이콘 교체",
+    "스플래시·스토어 이미지 적용"
+  ]
+}
