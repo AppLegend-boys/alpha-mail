@@ -11,6 +11,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
+import 'naver_mail.dart';
 import 'screens.dart';
 
 /// Little-endian signed 16-bit PCM to normalized float samples in [-1, 1).
@@ -29,7 +30,7 @@ void main() {
       'Gowun Batang',
     ], await rootBundle.loadString('assets/fonts/OFL.txt'));
   });
-  runApp(const AlphaVoiceApp());
+  runApp(const AlphaMailApp());
 }
 
 // Night voice mode: high-contrast dark with one mint accent, for glancing
@@ -74,12 +75,12 @@ ThemeData _theme() {
   );
 }
 
-class AlphaVoiceApp extends StatelessWidget {
-  const AlphaVoiceApp({super.key});
+class AlphaMailApp extends StatelessWidget {
+  const AlphaMailApp({super.key});
 
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'Alpha Voice',
+    title: 'Alpha Mail',
     debugShowCheckedModeBanner: false,
     theme: _theme(),
     home: const SpeechScreen(),
@@ -287,6 +288,7 @@ class _SpeechScreenState extends State<SpeechScreen>
     duration: const Duration(milliseconds: 1600),
   );
   final _scaffold = GlobalKey<ScaffoldState>();
+  final _content = GlobalKey<NavigatorState>();
 
   /// What the user has said since the mic went on.
   String _heard = '';
@@ -298,10 +300,63 @@ class _SpeechScreenState extends State<SpeechScreen>
   bool _listening = false;
   bool _error = false;
 
+  /// Connected Naver account and its unread mails; mock mails until then.
+  NaverMail? _account;
+  List<Mail>? _unread;
+  String? _mailError;
+
+  List<Mail> get _mails => _account == null ? mockMails : _unread ?? const [];
+
   @override
   void initState() {
     super.initState();
-    _init();
+    // Desktop starts with mail only: no recogniser, no model downloads.
+    if (!isDesktop) _init();
+    _loadMail();
+  }
+
+  Future<void> _loadMail() async {
+    final NaverMail? account;
+    try {
+      account = await NaverMail.load();
+    } catch (_) {
+      // Without this the account just looked unlinked, as if it was lost.
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            duration: Duration(seconds: 10),
+            content: Text(
+              '키체인 접근이 허용되지 않아 저장된 메일 계정을 불러오지 못했어요. '
+              '앱을 다시 켜고 허락 창에서 [항상 허용]을 눌러 주세요.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+    if (account == null || !mounted) return;
+    setState(() => _account = account);
+    try {
+      final unread = await account.fetchUnread();
+      if (mounted) setState(() => _unread = unread);
+    } catch (error) {
+      if (mounted) setState(() => _mailError = naverMailError(error));
+    }
+  }
+
+  void _openConnect() {
+    _closeDrawer();
+    _push(
+      MailProviderScreen(
+        from: [homeLabel],
+        connected: _account?.address,
+        onChanged: (account, unread) => setState(() {
+          _account = account;
+          _unread = unread;
+          _mailError = null;
+        }),
+      ),
+    );
   }
 
   bool get _loaded => _recognizer != null || _offline != null;
@@ -370,6 +425,8 @@ class _SpeechScreenState extends State<SpeechScreen>
       await getApplicationSupportDirectory(),
       await getTemporaryDirectory(),
     ]) {
+      // macOS doesn't create the cache folder until something writes there.
+      if (!await dir.exists()) continue;
       await for (final entry in dir.list()) {
         if (entry is File &&
             entry.uri.pathSegments.last.startsWith(
@@ -593,9 +650,9 @@ class _SpeechScreenState extends State<SpeechScreen>
           content: Text(
             '${model.title} 모델 파일 ${model.size}를 한 번 내려받아요. '
             'Wi-Fi 연결을 권장해요.\n\n'
-            '화면이 꺼지거나 다른 앱을 써도 계속 받아요. '
+            '${isDesktop ? '앱을 닫아도 다음에 열면 이어서 받아요. ' : '화면이 꺼지거나 다른 앱을 써도 계속 받아요. '}'
             '${_loaded ? '받는 동안에는 지금 모델을 그대로 쓸 수 있어요. ' : ''}'
-            '받은 뒤에는 인터넷 없이 이 휴대폰 안에서만 인식해요.',
+            '받은 뒤에는 인터넷 없이 이 기기 안에서만 인식해요.',
           ),
           actions: [
             TextButton(
@@ -922,10 +979,13 @@ class _SpeechScreenState extends State<SpeechScreen>
     try {
       if (_listening) await _toggleListening();
       if (!mounted) return;
-      await Navigator.push(
-        context,
-        MaterialPageRoute(builder: (_) => const BriefingScreen()),
-      );
+      if (_mails.isEmpty) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(_mailError ?? '안 읽은 메일이 없어요')));
+        return;
+      }
+      await _push(BriefingScreen(from: [homeLabel], mails: _mails));
     } finally {
       _opening = false;
     }
@@ -955,69 +1015,96 @@ class _SpeechScreenState extends State<SpeechScreen>
     super.dispose();
   }
 
+  /// Wide windows open screens in the content pane beside the sidebar.
+  Future<void> _push(Widget screen) =>
+      (_content.currentState ?? Navigator.of(context)).push(
+        MaterialPageRoute(builder: (_) => screen),
+      );
+
+  /// Menu taps close the drawer; the sidebar has none to close.
+  void _closeDrawer() {
+    if (_scaffold.currentState?.isDrawerOpen ?? false) Navigator.pop(context);
+  }
+
   void _soon(String what) {
-    Navigator.pop(context); // Close the drawer first.
+    _closeDrawer();
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text('$what은 준비 중이에요 (목업)')));
   }
 
   void _pickModel() {
-    Navigator.pop(context);
+    _closeDrawer();
+    if (_content.currentState != null) {
+      showDialog<void>(
+        context: context,
+        builder: (context) => Dialog(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 520),
+            child: Padding(
+              padding: const EdgeInsets.only(top: 24, bottom: 8),
+              child: _modelList(context),
+            ),
+          ),
+        ),
+      );
+      return;
+    }
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
-      builder: (context) {
-        final colors = Theme.of(context).colorScheme;
-        final locked = _busy || _listening;
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
-                child: Text(
-                  locked ? '듣는 중에는 바꿀 수 없어요' : '음성 모델',
-                  style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ),
-              for (final m in SpeechModel.values)
-                ListTile(
-                  enabled: !locked,
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 24),
-                  leading: Icon(
-                    m == _model
-                        ? Icons.radio_button_checked
-                        : Icons.radio_button_off,
-                    color: m == _model ? colors.primary : colors.outline,
-                  ),
-                  title: Text(
-                    '${m.label} · ${m.title}',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                  subtitle: Text('${m.blurb} · ${m.size}'),
-                  onTap: () {
-                    Navigator.pop(context);
-                    _switchModel(m);
-                  },
-                ),
-              const SizedBox(height: 12),
-            ],
-          ),
-        );
-      },
+      builder: _modelList,
     );
   }
 
-  Widget _drawer(ColorScheme colors) {
+  Widget _modelList(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final locked = _busy || _listening;
+    return SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+            child: Text(
+              locked ? '듣는 중에는 바꿀 수 없어요' : '음성 모델',
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+            ),
+          ),
+          for (final m in SpeechModel.values)
+            ListTile(
+              enabled: !locked,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 24),
+              leading: Icon(
+                m == _model
+                    ? Icons.radio_button_checked
+                    : Icons.radio_button_off,
+                color: m == _model ? colors.primary : colors.outline,
+              ),
+              title: Text(
+                '${m.label} · ${m.title}',
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+              subtitle: Text('${m.blurb} · ${m.size}'),
+              onTap: () {
+                Navigator.pop(context);
+                _switchModel(m);
+              },
+            ),
+          const SizedBox(height: 12),
+        ],
+      ),
+    );
+  }
+
+  /// Menu body: inside the drawer on phones, the sidebar on wide windows.
+  Widget _menu(ColorScheme colors) {
     Widget item(
       String label, {
       bool selected = false,
       IconData? icon,
+      Color? iconColor,
       String? sub,
       required VoidCallback onTap,
     }) => Padding(
@@ -1031,7 +1118,7 @@ class _SpeechScreenState extends State<SpeechScreen>
             ? Icon(Icons.circle, size: 10, color: colors.primary)
             : icon == null
             ? null
-            : Icon(icon, color: colors.onSurfaceVariant),
+            : Icon(icon, color: iconColor ?? colors.onSurfaceVariant),
         minLeadingWidth: 10,
         title: Text(
           label,
@@ -1041,37 +1128,44 @@ class _SpeechScreenState extends State<SpeechScreen>
         onTap: onTap,
       ),
     );
-    return Drawer(
-      child: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 6),
-                child: _Brand(),
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 6),
+              child: _Brand(),
+            ),
+            Divider(height: 28, color: colors.outlineVariant),
+            ListTile(
+              leading: CircleAvatar(
+                backgroundColor: colors.surfaceContainer,
+                child: const Text('민'),
               ),
-              Divider(height: 28, color: colors.outlineVariant),
-              ListTile(
-                leading: CircleAvatar(
-                  backgroundColor: colors.surfaceContainer,
-                  child: const Text('민'),
-                ),
-                title: const Text(
-                  '민지님',
-                  style: TextStyle(fontWeight: FontWeight.w700),
-                ),
-                subtitle: const Text('개인 메일 공간'),
+              title: const Text(
+                '민지님',
+                style: TextStyle(fontWeight: FontWeight.w700),
               ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 6),
-                child: Text(
-                  '메뉴',
-                  style: TextStyle(color: colors.onSurfaceVariant),
-                ),
+              subtitle: const Text('개인 메일 공간'),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 6),
+              child: Text(
+                '메뉴',
+                style: TextStyle(color: colors.onSurfaceVariant),
               ),
-              item('음성 홈', selected: true, onTap: () => Navigator.pop(context)),
+            ),
+            item(
+              homeLabel,
+              selected: true,
+              onTap: () {
+                _closeDrawer();
+                _content.currentState?.popUntil((route) => route.isFirst);
+              },
+            ),
+            if (!isDesktop)
               item(
                 '음성 모델',
                 icon: Icons.graphic_eq_rounded,
@@ -1081,11 +1175,21 @@ class _SpeechScreenState extends State<SpeechScreen>
                     : '${_model.label} · ${_model.title}',
                 onTap: _pickModel,
               ),
-              item('메일 계정', onTap: () => _soon('메일 계정')),
+            // One entry for mail linking: a call to action until an account
+            // is linked, then a plain item showing which one.
+            if (_account case final account?)
+              item(
+                '메일 연동',
+                icon: Icons.check_circle_rounded,
+                iconColor: colors.primary,
+                sub: '네이버 연결됨 · ${account.address}',
+                onTap: _openConnect,
+              )
+            else
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 3),
                 child: OutlinedButton.icon(
-                  onPressed: () => _soon('메일 연동'),
+                  onPressed: _openConnect,
                   icon: const Icon(Icons.add_rounded),
                   label: const Text('메일 연동하기'),
                   style: OutlinedButton.styleFrom(
@@ -1108,20 +1212,18 @@ class _SpeechScreenState extends State<SpeechScreen>
                   ),
                 ),
               ),
-              item('히스토리', onTap: () => _soon('히스토리')),
-              item('앱 설정', onTap: () => _soon('앱 설정')),
-              item(
-                '오프라인 화면 미리보기',
-                icon: Icons.cloud_off_rounded,
-                onTap: () {
-                  Navigator.pop(context);
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const OfflineScreen()),
-                  );
-                },
-              ),
-              const Spacer(),
+            item('히스토리', onTap: () => _soon('히스토리')),
+            item('앱 설정', onTap: () => _soon('앱 설정')),
+            item(
+              '오프라인 화면 미리보기',
+              icon: Icons.cloud_off_rounded,
+              onTap: () {
+                _closeDrawer();
+                _push(OfflineScreen(from: [homeLabel]));
+              },
+            ),
+            const Spacer(),
+            if (!isDesktop)
               VoiceCard(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -1141,8 +1243,7 @@ class _SpeechScreenState extends State<SpeechScreen>
                   ],
                 ),
               ),
-            ],
-          ),
+          ],
         ),
       ),
     );
@@ -1157,6 +1258,7 @@ class _SpeechScreenState extends State<SpeechScreen>
     } else {
       _pulse.stop();
     }
+    final wide = MediaQuery.sizeOf(context).width >= 840;
     final needsModel = !_busy && !_loaded;
     final onMic = _busy || (needsModel && _downloadingModel != null)
         ? null
@@ -1174,215 +1276,276 @@ class _SpeechScreenState extends State<SpeechScreen>
         ? ('듣고 있어요', '말씀해 주세요')
         : _partial == '…'
         ? ('말씀을 확인하고 있어요', '잠시만요')
-        : ('눌러서 말하기', _status == _missed ? _missed : '"오늘 메일 온 거 읊어줘"');
+        : (
+            wide && !isDesktop ? '눌러서 말하기 · Space' : '눌러서 말하기',
+            _status == _missed ? _missed : '"오늘 메일 온 거 읊어줘"',
+          );
     final heard = '$_heard $_partial'.trim();
+
+    final content = ListView(
+      padding: wide
+          ? const EdgeInsets.fromLTRB(48, 48, 48, 32)
+          : const EdgeInsets.fromLTRB(20, 8, 20, 24),
+      children: [
+        if (!wide) ...[
+          Row(
+            children: [
+              IconButton.outlined(
+                tooltip: '메뉴',
+                onPressed: () => _scaffold.currentState?.openDrawer(),
+                icon: const Icon(Icons.menu_rounded),
+                style: IconButton.styleFrom(
+                  side: BorderSide(color: colors.outlineVariant),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              const _Brand(),
+            ],
+          ),
+          const SizedBox(height: 28),
+        ],
+        if (!isDesktop)
+          if (_downloadingModel ?? _failedDownload case final model?) ...[
+            _DownloadBanner(
+              label: model.label,
+              progress: _downloadFraction,
+              filesDone: _fileProgress.values.where((p) => p == 1).length,
+              filesTotal: model.files.length,
+              failed: _downloadingModel == null,
+              onCancel: _cancelDownload,
+              onRetry: () => _startDownload(model),
+              onDismiss: () => setState(() => _failedDownload = null),
+            ),
+            const SizedBox(height: 20),
+          ],
+        // 01 voice home ⇄ 02 listening share this screen.
+        if (_listening) ...[
+          ScreenTitle('네이버메일', '안 읽은 메일 ${_mails.length}건'),
+          const SizedBox(height: 18),
+          VoiceCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '읽어드릴까요?',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '"어, 해줘" 또는 "나중에"',
+                  style: TextStyle(color: colors.onSurfaceVariant),
+                ),
+              ],
+            ),
+          ),
+        ] else ...[
+          const ScreenTitle('운전 중에도', '메일을 듣고\n말로 답장하세요'),
+          const SizedBox(height: 18),
+          VoiceCard(
+            onTap: _openBriefing,
+            child: Row(
+              children: [
+                CircleAvatar(
+                  radius: 14,
+                  backgroundColor: colors.primaryContainer,
+                  child: Text(
+                    'N',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w800,
+                      color: colors.primary,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _account == null
+                            ? '예시 메일 · ${mockMails.length}건'
+                            : _unread == null && _mailError == null
+                            ? '네이버메일 · 불러오는 중'
+                            : '네이버메일 · ${_mails.length}건',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      Text(
+                        _account == null
+                            ? '메일 연동하기를 누르면 내 메일로 바뀌어요'
+                            : _mailError ?? '안 읽은 메일',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: colors.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(
+                  Icons.chevron_right_rounded,
+                  color: colors.onSurfaceVariant,
+                ),
+              ],
+            ),
+          ),
+        ],
+        if (!isDesktop) ...[
+          const SizedBox(height: 28),
+          Row(
+            children: [
+              _MicButton(
+                pulse: _pulse,
+                listening: _listening,
+                busy: _busy,
+                icon: needsModel
+                    ? Icons.download_rounded
+                    : _listening
+                    ? Icons.stop_rounded
+                    : Icons.mic_none_rounded,
+                label: needsModel
+                    ? '${_model.label} 모델 내려받기'
+                    : _listening
+                    ? '듣기 멈추기'
+                    : '말하기 시작',
+                onPressed: onMic,
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Semantics(
+                  liveRegion: true,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        micTitle,
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w800,
+                          color: _error ? colors.error : colors.primary,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        micHint,
+                        style: TextStyle(
+                          fontSize: 15,
+                          color: colors.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (_listening || heard.isNotEmpty) ...[
+            const SizedBox(height: 24),
+            VoiceCard(
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '인식한 말',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: colors.onSurfaceVariant,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          heard.isEmpty ? '…' : '“$heard”',
+                          style: const TextStyle(
+                            fontSize: 22,
+                            height: 1.4,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (_listening)
+                    Icon(Icons.circle, size: 12, color: colors.primary),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              '음성은 기기 안에서 인식합니다',
+              style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
+            ),
+          ],
+        ],
+      ],
+    );
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle.light.copyWith(
         systemNavigationBarColor: colors.surface,
         systemNavigationBarIconBrightness: Brightness.light,
       ),
-      child: Scaffold(
-        key: _scaffold,
-        drawer: _drawer(colors),
-        body: SafeArea(
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
-            children: [
-              Row(
-                children: [
-                  IconButton.outlined(
-                    tooltip: '메뉴',
-                    onPressed: () => _scaffold.currentState?.openDrawer(),
-                    icon: const Icon(Icons.menu_rounded),
-                    style: IconButton.styleFrom(
-                      side: BorderSide(color: colors.outlineVariant),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  const _Brand(),
-                ],
-              ),
-              const SizedBox(height: 28),
-              if (_downloadingModel ?? _failedDownload case final model?) ...[
-                _DownloadBanner(
-                  label: model.label,
-                  progress: _downloadFraction,
-                  filesDone: _fileProgress.values.where((p) => p == 1).length,
-                  filesTotal: model.files.length,
-                  failed: _downloadingModel == null,
-                  onCancel: _cancelDownload,
-                  onRetry: () => _startDownload(model),
-                  onDismiss: () => setState(() => _failedDownload = null),
-                ),
-                const SizedBox(height: 20),
-              ],
-              // 01 voice home ⇄ 02 listening share this screen.
-              if (_listening) ...[
-                const ScreenTitle('네이버메일', '안 읽은 메일 3건'),
-                const SizedBox(height: 18),
-                VoiceCard(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+      child: CallbackShortcuts(
+        bindings: {
+          if (!isDesktop)
+            const SingleActivator(LogicalKeyboardKey.space): () {
+              // Only on the home pane, where the mic is.
+              if (onMic != null &&
+                  !(_content.currentState?.canPop() ?? false)) {
+                onMic();
+              }
+            },
+        },
+        child: Focus(
+          autofocus: true,
+          child: Scaffold(
+            key: _scaffold,
+            drawer: wide ? null : Drawer(child: _menu(colors)),
+            body: wide
+                ? Row(
                     children: [
-                      const Text(
-                        '읽어드릴까요?',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        '"어, 해줘" 또는 "나중에"',
-                        style: TextStyle(color: colors.onSurfaceVariant),
-                      ),
-                    ],
-                  ),
-                ),
-              ] else ...[
-                const ScreenTitle('운전 중에도', '메일을 듣고\n말로 답장하세요'),
-                const SizedBox(height: 18),
-                VoiceCard(
-                  onTap: _openBriefing,
-                  child: Row(
-                    children: [
-                      CircleAvatar(
-                        radius: 14,
-                        backgroundColor: colors.primaryContainer,
-                        child: Text(
-                          'N',
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w800,
-                            color: colors.primary,
+                      Container(
+                        width: 288,
+                        decoration: BoxDecoration(
+                          border: Border(
+                            right: BorderSide(color: colors.outlineVariant),
                           ),
                         ),
+                        child: _menu(colors),
                       ),
-                      const SizedBox(width: 12),
                       Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              '네이버메일 · 3건',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                            Text(
-                              '안 읽은 메일',
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: colors.onSurfaceVariant,
+                        child: Navigator(
+                          key: _content,
+                          pages: [
+                            MaterialPage(
+                              key: const ValueKey('home'),
+                              child: Material(
+                                color: colors.surface,
+                                child: Center(
+                                  child: ConstrainedBox(
+                                    constraints: const BoxConstraints(
+                                      maxWidth: 760,
+                                    ),
+                                    child: content,
+                                  ),
+                                ),
                               ),
                             ),
                           ],
+                          onDidRemovePage: (_) {},
                         ),
                       ),
-                      Icon(
-                        Icons.chevron_right_rounded,
-                        color: colors.onSurfaceVariant,
-                      ),
                     ],
-                  ),
-                ),
-              ],
-              const SizedBox(height: 28),
-              Row(
-                children: [
-                  _MicButton(
-                    pulse: _pulse,
-                    listening: _listening,
-                    busy: _busy,
-                    icon: needsModel
-                        ? Icons.download_rounded
-                        : _listening
-                        ? Icons.stop_rounded
-                        : Icons.mic_none_rounded,
-                    label: needsModel
-                        ? '${_model.label} 모델 내려받기'
-                        : _listening
-                        ? '듣기 멈추기'
-                        : '말하기 시작',
-                    onPressed: onMic,
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Semantics(
-                      liveRegion: true,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            micTitle,
-                            style: TextStyle(
-                              fontSize: 20,
-                              fontWeight: FontWeight.w800,
-                              color: _error ? colors.error : colors.primary,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            micHint,
-                            style: TextStyle(
-                              fontSize: 15,
-                              color: colors.onSurfaceVariant,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              if (_listening || heard.isNotEmpty) ...[
-                const SizedBox(height: 24),
-                VoiceCard(
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              '인식한 말',
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: colors.onSurfaceVariant,
-                              ),
-                            ),
-                            const SizedBox(height: 6),
-                            Text(
-                              heard.isEmpty ? '…' : '“$heard”',
-                              style: const TextStyle(
-                                fontSize: 22,
-                                height: 1.4,
-                                fontWeight: FontWeight.w800,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      if (_listening)
-                        Icon(Icons.circle, size: 12, color: colors.primary),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  '음성은 기기 안에서 인식합니다',
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: colors.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ],
+                  )
+                : SafeArea(child: content),
           ),
         ),
       ),
@@ -1399,6 +1562,9 @@ class _Brand extends StatelessWidget {
   Widget build(BuildContext context) => Image.asset(
     'assets/brand/logo-horizontal.png',
     height: 34,
+    // The 600×160 source shrinks ~2–5×; the default low filter skips pixels
+    // at that ratio and left the curves jagged. Medium samples mipmaps.
+    filterQuality: FilterQuality.medium,
     semanticLabel: 'Alpha-mail',
   );
 }
@@ -1613,7 +1779,8 @@ class _DownloadBanner extends StatelessWidget {
             ),
             const SizedBox(height: 6),
             Text(
-              '파일 $filesDone/$filesTotal개 받음 · 화면을 꺼도 계속 받아요',
+              '파일 $filesDone/$filesTotal개 받음 · '
+              '${isDesktop ? '앱을 닫아도 이어서 받아요' : '화면을 꺼도 계속 받아요'}',
               style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
             ),
           ],

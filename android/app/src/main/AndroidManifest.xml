@@ -9,7 +9,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <application
-        android:label="alpha_voice"
+        android:label="Alpha Mail"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

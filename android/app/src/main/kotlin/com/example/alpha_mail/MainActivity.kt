@@ -1,4 +1,4 @@
-package com.example.alpha_voice
+package com.example.alpha_mail
 
 import io.flutter.embedding.android.FlutterActivity
 

@@ -1,4 +1,4 @@
-# Alpha Voice
+# Alpha Mail
 
 Android·iOS용 완전 로컬 한국어 음성인식 MVP입니다. 마이크 음성은 sherpa-onnx 엔진과 한국어 Zipformer 모델로 기기 안에서 처리합니다. 앱에는 네트워크 권한을 추가하지 않았고, 음성 서버나 API 키를 사용하지 않습니다.
 

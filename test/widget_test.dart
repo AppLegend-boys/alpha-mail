@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
-import 'package:alpha_voice/main.dart';
+import 'package:alpha_mail/main.dart';
+import 'package:alpha_mail/naver_mail.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -37,5 +38,18 @@ void main() {
       expect(model.tasks.every((t) => t.group == model.name), isTrue);
       expect(SpeechModel.forGroup(model.name), model);
     }
+  });
+
+  test('htmlToText keeps line breaks and drops markup', () {
+    const html =
+        '<html><head><style>p{color:red}</style></head><body>'
+        '<p>안녕하세요&nbsp;김서연입니다.</p><div>견적서 &amp; 일정</div>'
+        'A&lt;B<br>끝</body></html>';
+    expect(htmlToText(html), '안녕하세요 김서연입니다.\n견적서 & 일정\nA<B\n끝');
+  });
+
+  test('NaverMail keeps only the ID part of an address', () {
+    expect(NaverMail(' minji@naver.com ', 'pw').id, 'minji');
+    expect(NaverMail('minji', 'pw').address, 'minji@naver.com');
   });
 }
