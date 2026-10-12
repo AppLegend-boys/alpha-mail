@@ -1,6 +1,6 @@
 import 'dart:typed_data';
 
-import 'package:alpha_mail/main.dart';
+import 'package:alpha_mail/speech.dart';
 import 'package:alpha_mail/naver_mail.dart';
 import 'package:flutter_test/flutter_test.dart';
 
