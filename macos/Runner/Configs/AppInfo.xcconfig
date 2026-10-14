@@ -8,7 +8,7 @@
 PRODUCT_NAME = Alpha Mail
 
 // The application's bundle identifier
-PRODUCT_BUNDLE_IDENTIFIER = com.example.alphaMail
+PRODUCT_BUNDLE_IDENTIFIER = com.applegend.alphamail
 
 // The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright © 2026 com.example. All rights reserved.
+PRODUCT_COPYRIGHT = Copyright © 2026 AppLegend. All rights reserved.

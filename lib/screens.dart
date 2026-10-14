@@ -1,12 +1,15 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
-import 'naver_mail.dart';
+import 'mail_account.dart';
 
 // ponytail: every screen here runs on mock mail until mail sync and TTS exist.
 
@@ -22,6 +25,11 @@ class Mail {
     this.length,
     this.draft, {
     this.html,
+    this.source = '예시 메일',
+    this.date,
+    this.account,
+    this.uid,
+    this.seen = false,
   });
   final String from;
   final String subject;
@@ -34,13 +42,39 @@ class Mail {
   /// Original HTML body, shown as sent so its images and layout survive;
   /// [body] stays the plain text to read aloud.
   final String? html;
+
+  /// Mail service it came from, e.g. 네이버 메일.
+  final String source;
+  final DateTime? date;
+
+  /// Where to mark it read; null for the example mails.
+  final MailAccount? account;
+  final int? uid;
+
+  /// Already read when fetched, or sent by the user.
+  final bool seen;
+}
+
+/// Marks [mail] read on its server, then tells [onRead]. Best effort: a
+/// failure just leaves it unread.
+void markRead(Mail mail, void Function(Mail)? onRead) {
+  if (mail case Mail(:final account?, :final uid?, seen: false)) {
+    account
+        .markSeen(uid)
+        .then(
+          (_) => onRead?.call(mail),
+          onError: (Object e) {
+            debugPrint('mark read failed: $e');
+          },
+        );
+  }
 }
 
 /// Desktop is mail-first for now: voice recognition and its models are off.
 final isDesktop = Platform.isMacOS || Platform.isWindows || Platform.isLinux;
 
 /// First crumb of every menu path, named after what home is on this device.
-final homeLabel = isDesktop ? '메일 홈' : '음성 홈';
+final homeLabel = isDesktop ? '메일 홈' : '홈';
 
 const mockMails = [
   Mail(
@@ -180,7 +214,7 @@ class ButtonPair extends StatelessWidget {
   }
 }
 
-class _Page extends StatelessWidget {
+class _Page extends StatefulWidget {
   const _Page({required this.trail, required this.children});
 
   /// Menu path from home to this screen, shown top left.
@@ -188,17 +222,47 @@ class _Page extends StatelessWidget {
   final List<Widget> children;
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(titleSpacing: 0, title: _Trail(trail)),
-    body: SafeArea(
-      top: false,
-      // Desktop windows: keep the column readable instead of edge to edge.
-      child: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 760),
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
-            children: children,
+  State<_Page> createState() => _PageState();
+}
+
+class _PageState extends State<_Page> {
+  /// Set once a trackpad swipe has gone back, so one swipe pops one page.
+  bool _swiped = false;
+
+  // Mouse back button and two-finger swipe right go back, as in a browser.
+  // ponytail: Flutter can't see gestures over the mail's WebView.
+  void _onPointer(PointerEvent event) {
+    switch (event) {
+      case PointerDownEvent(:final buttons)
+          when buttons & kBackMouseButton != 0:
+        Navigator.maybePop(context);
+      case PointerPanZoomStartEvent():
+        _swiped = false;
+      case PointerPanZoomUpdateEvent(:final pan)
+          when !_swiped && pan.dx > 120 && pan.dx > pan.dy.abs() * 2:
+        _swiped = true;
+        Navigator.maybePop(context);
+      default:
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Listener(
+    onPointerDown: _onPointer,
+    onPointerPanZoomStart: _onPointer,
+    onPointerPanZoomUpdate: _onPointer,
+    child: Scaffold(
+      appBar: AppBar(titleSpacing: 0, title: _Trail(widget.trail)),
+      body: SafeArea(
+        top: false,
+        // Desktop windows: keep the column readable instead of edge to edge.
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 760),
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+              children: widget.children,
+            ),
           ),
         ),
       ),
@@ -257,6 +321,411 @@ class _Trail extends StatelessWidget {
   }
 }
 
+/// Mail lists in the menu, each across every linked account.
+enum MailFolder {
+  all('전체 메일'),
+  unread('안 읽은 메일'),
+  sent('보낸 메일');
+
+  const MailFolder(this.label);
+  final String label;
+}
+
+/// One [MailFolder] of every linked account, newest first, with a chip per
+/// account to look at one alone. No accounts shows the example mails.
+class MailFolderScreen extends StatefulWidget {
+  const MailFolderScreen({
+    super.key,
+    required this.from,
+    required this.folder,
+    required this.accounts,
+    this.only,
+    this.limit = 20,
+    this.onRead,
+    this.onAllRead,
+    this.onOpenAll,
+  });
+
+  final List<String> from;
+  final MailFolder folder;
+
+  /// Mails per account, from [AppSettings.listSize].
+  final int limit;
+  final List<MailAccount> accounts;
+
+  /// The account picked first; null shows every account.
+  final MailAccount? only;
+
+  /// Called once an unread mail opened from here is marked read.
+  final void Function(Mail)? onRead;
+
+  /// Called once every inbox mail of the account is marked read.
+  final void Function(MailAccount)? onAllRead;
+
+  /// Opens 전체 메일, for [only] that account when given; the unread list
+  /// links there at its end.
+  final void Function(MailAccount? only)? onOpenAll;
+
+  @override
+  State<MailFolderScreen> createState() => _MailFolderScreenState();
+}
+
+class _MailFolderScreenState extends State<MailFolderScreen> {
+  late String? _only = widget.only?.address;
+  final _mails = <String, List<Mail>>{};
+  final _errors = <String, String>{};
+
+  /// Unread folder: the inbox's whole unread count per account.
+  final _totals = <String, int>{};
+
+  /// Accounts whose unread were all marked read here.
+  final _allRead = <String>{};
+
+  /// (address, UID) of mails read since the list opened.
+  final _read = <(String, int)>{};
+  bool _marking = false;
+
+  /// Accounts whose last page came back full, so older mail may be left.
+  final _more = <String>{};
+  bool _loadingMore = false;
+
+  @override
+  void initState() {
+    super.initState();
+    for (final account in widget.accounts) {
+      _fetch(account);
+    }
+  }
+
+  /// Fetches the newest page, or with [before] the page older than that UID
+  /// added to the end.
+  Future<void> _fetch(MailAccount account, {int? before}) async {
+    try {
+      final mails = switch (widget.folder) {
+        MailFolder.unread =>
+          await account.fetchUnread(limit: widget.limit, before: before).then((
+            unread,
+          ) {
+            // An older page counts only what's older, not the inbox.
+            if (before == null) _totals[account.address] = unread.total;
+            return unread.mails;
+          }),
+        MailFolder.all => await account.fetchRecent(
+          limit: widget.limit,
+          before: before,
+        ),
+        MailFolder.sent => await account.fetchRecent(
+          limit: widget.limit,
+          sent: true,
+          before: before,
+        ),
+      };
+      if (!mounted) return;
+      setState(() {
+        _mails[account.address] = [...?_mails[account.address], ...mails];
+        mails.length >= widget.limit
+            ? _more.add(account.address)
+            : _more.remove(account.address);
+      });
+    } catch (error) {
+      final message =
+          '${account.address}: ${mailError(account.service, error)}';
+      if (mounted) setState(() => _errors[account.address] = message);
+    }
+  }
+
+  /// 더 보기: the next older page of every shown account that has one.
+  Future<void> _loadMore() async {
+    setState(() => _loadingMore = true);
+    await Future.wait([
+      for (final a in _shown)
+        if (_more.contains(a.address))
+          _fetch(
+            a,
+            before: _mails[a.address]!.map((m) => m.uid!).reduce(math.min),
+          ),
+    ]);
+    if (mounted) setState(() => _loadingMore = false);
+  }
+
+  List<MailAccount> get _shown => [
+    for (final a in widget.accounts)
+      if (_only == null || a.address == _only) a,
+  ];
+
+  bool get _loading => _shown.any(
+    (a) => !_mails.containsKey(a.address) && !_errors.containsKey(a.address),
+  );
+
+  List<Mail> get _list => widget.accounts.isEmpty
+      ? mockMails
+      : ([for (final a in _shown) ...?_mails[a.address]]..sort(
+          (a, b) => (b.date ?? DateTime(0)).compareTo(a.date ?? DateTime(0)),
+        ));
+
+  bool _isRead(Mail mail) => switch (mail) {
+    Mail(seen: true) => true,
+    Mail(:final account?, :final uid?) =>
+      _allRead.contains(account.address) ||
+          _read.contains((account.address, uid)),
+    _ => false,
+  };
+
+  int get _left => widget.accounts.isEmpty
+      ? mockMails.length
+      : [
+          for (final a in _shown)
+            if (!_allRead.contains(a.address))
+              (_totals[a.address] ?? 0) -
+                  (_mails[a.address] ?? const []).where(_isRead).length,
+        ].fold(0, (sum, n) => sum + n);
+
+  Future<void> _markAll() async {
+    final accounts = [
+      for (final a in _shown)
+        if (_mails.containsKey(a.address) && !_allRead.contains(a.address)) a,
+    ];
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('모두 읽음으로 표시할까요?'),
+        content: Text(
+          '${accounts.map((a) => a.address).join(', ')}의 안 읽은 메일 '
+          '$_left건이 메일함에서도 읽음으로 바뀌어요.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('취소'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('모두 읽음'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    setState(() => _marking = true);
+    await Future.wait([
+      for (final account in accounts)
+        account.markAllSeen().then(
+          (_) {
+            if (mounted) setState(() => _allRead.add(account.address));
+            widget.onAllRead?.call(account);
+          },
+          onError: (Object error) {
+            if (!mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  '${account.address}: ${mailError(account.service, error)}',
+                ),
+              ),
+            );
+          },
+        ),
+    ]);
+    if (mounted) setState(() => _marking = false);
+  }
+
+  void _onRead(Mail mail) {
+    if (mounted) setState(() => _read.add((mail.account!.address, mail.uid!)));
+    widget.onRead?.call(mail);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final hint = TextStyle(fontSize: 13, color: colors.onSurfaceVariant);
+    final accounts = widget.accounts;
+    final mails = _list;
+    final unread = widget.folder == MailFolder.unread;
+    return _Page(
+      trail: [...widget.from, widget.folder.label],
+      children: [
+        ScreenTitle(switch (accounts) {
+          [] => '예시 메일',
+          [final single] => single.address,
+          _ => _only ?? '메일 ${accounts.length}개 계정',
+        }, unread ? '안 읽은 메일 $_left건' : widget.folder.label),
+        const SizedBox(height: 14),
+        Row(
+          children: [
+            Expanded(
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  if (accounts.length > 1)
+                    for (final address in [
+                      null,
+                      ...accounts.map((a) => a.address),
+                    ])
+                      ChoiceChip(
+                        label: Text(address ?? '전체 계정'),
+                        selected: _only == address,
+                        onSelected: (_) => setState(() => _only = address),
+                      ),
+                ],
+              ),
+            ),
+            if (unread && accounts.isNotEmpty)
+              TextButton.icon(
+                onPressed: _marking || _loading || _left <= 0 ? null : _markAll,
+                icon: _marking
+                    ? const SizedBox.square(
+                        dimension: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.done_all_rounded),
+                label: const Text('모두 읽음'),
+              ),
+          ],
+        ),
+        const SizedBox(height: 14),
+        for (final a in _shown)
+          if (_errors[a.address] case final error?) ...[
+            Text(error, style: hint),
+            const SizedBox(height: 8),
+          ],
+        if (mails.isEmpty)
+          _loading
+              ? const Center(child: CircularProgressIndicator())
+              : Text('메일이 없어요', textAlign: TextAlign.center, style: hint),
+        for (final (i, mail) in mails.indexed) ...[
+          if (i > 0) const SizedBox(height: 8),
+          MailTile(
+            mail,
+            read: _isRead(mail),
+            showSource: _only == null && accounts.length > 1,
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => BriefingScreen(
+                  from: [...widget.from, widget.folder.label],
+                  mails: mails,
+                  index: i,
+                  onRead: _onRead,
+                ),
+              ),
+            ),
+          ),
+        ],
+        if (_loading && mails.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          Text('다른 계정 메일을 불러오는 중…', textAlign: TextAlign.center, style: hint),
+        ] else if (_shown.any((a) => _more.contains(a.address))) ...[
+          const SizedBox(height: 16),
+          OutlinedButton(
+            onPressed: _loadingMore ? null : _loadMore,
+            style: OutlinedButton.styleFrom(
+              minimumSize: const Size.fromHeight(52),
+            ),
+            child: _loadingMore
+                ? const SizedBox.square(
+                    dimension: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Text('더 보기'),
+          ),
+        ],
+        if (unread && accounts.isNotEmpty && widget.onOpenAll != null) ...[
+          const SizedBox(height: 8),
+          TextButton.icon(
+            onPressed: () => widget.onOpenAll!(
+              accounts.where((a) => a.address == _only).firstOrNull,
+            ),
+            icon: const Icon(Icons.inbox_rounded),
+            label: const Text('전체 메일함 가기'),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+/// One row of a mail list: sender, time, subject and the first body line.
+/// Read ones fade, as in a mail app's list.
+class MailTile extends StatelessWidget {
+  const MailTile(
+    this.mail, {
+    super.key,
+    required this.read,
+    required this.onTap,
+    this.showSource = false,
+  });
+
+  final Mail mail;
+  final bool read;
+  final VoidCallback onTap;
+
+  /// Prefix the time with the mail service, for lists mixing accounts.
+  final bool showSource;
+
+  static String _when(DateTime? date) {
+    if (date == null) return '';
+    final d = date.toLocal();
+    final now = DateTime.now();
+    String two(int n) => '$n'.padLeft(2, '0');
+    return d.year == now.year && d.month == now.month && d.day == now.day
+        ? '${two(d.hour)}:${two(d.minute)}'
+        : '${d.month}/${d.day}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final when = _when(mail.date);
+    return VoiceCard(
+      onTap: onTap,
+      child: Opacity(
+        opacity: read ? 0.5 : 1,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    mail.from,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                Text(
+                  showSource ? '${mail.source} · $when' : when,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              mail.subject,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 15),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              mail.body.replaceAll(RegExp(r'\s+'), ' '),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 /// 03 — reads one unread mail aloud, with a waveform while "playing".
 class BriefingScreen extends StatefulWidget {
   const BriefingScreen({
@@ -264,12 +733,16 @@ class BriefingScreen extends StatefulWidget {
     required this.from,
     this.index = 0,
     this.mails = mockMails,
+    this.onRead,
   });
 
   /// Menu path of the screen that opened this one.
   final List<String> from;
   final int index;
   final List<Mail> mails;
+
+  /// Called once a mail shown here is marked read on the server.
+  final void Function(Mail)? onRead;
 
   @override
   State<BriefingScreen> createState() => _BriefingScreenState();
@@ -282,6 +755,12 @@ class _BriefingScreenState extends State<BriefingScreen>
     vsync: this,
     duration: const Duration(milliseconds: 1200),
   )..repeat();
+
+  @override
+  void initState() {
+    super.initState();
+    markRead(widget.mails[_index], widget.onRead);
+  }
 
   @override
   void dispose() {
@@ -298,6 +777,7 @@ class _BriefingScreenState extends State<BriefingScreen>
       return;
     }
     setState(() => _index++);
+    markRead(widget.mails[_index], widget.onRead);
   }
 
   @override
@@ -314,7 +794,7 @@ class _BriefingScreenState extends State<BriefingScreen>
             borderRadius: BorderRadius.circular(10),
           ),
           child: Text(
-            '네이버메일 · ${_index + 1} / ${widget.mails.length}',
+            '${mail.source} · ${_index + 1} / ${widget.mails.length}',
             style: TextStyle(
               fontSize: 14,
               fontWeight: FontWeight.w700,
@@ -396,8 +876,9 @@ class _BriefingScreenState extends State<BriefingScreen>
   }
 }
 
-/// Renders a mail's HTML as its sender laid it out, images included.
-/// Scripts stay off and links open in the browser, never inside the app.
+/// Renders a mail's HTML as its sender laid it out, images included, as
+/// tall as the mail so the page scrolls as one. The mail's own scripts are
+/// blocked and links open in the browser, never inside the app.
 class _MailHtml extends StatefulWidget {
   const _MailHtml(this.html);
   final String html;
@@ -407,10 +888,16 @@ class _MailHtml extends StatefulWidget {
 }
 
 class _MailHtmlState extends State<_MailHtml> {
+  /// Content height once the page has loaded; a placeholder until then.
+  double _height = 520;
+
+  // JavaScript is on only so the app can measure the page; the CSP in
+  // [_page] keeps every script inside the mail from running.
   late final _web = WebViewController()
-    ..setJavaScriptMode(JavaScriptMode.disabled)
+    ..setJavaScriptMode(JavaScriptMode.unrestricted)
     ..setNavigationDelegate(
       NavigationDelegate(
+        onPageFinished: (_) => _measure(),
         onNavigationRequest: (request) {
           if (!request.url.startsWith('http')) {
             return NavigationDecision.navigate;
@@ -425,11 +912,28 @@ class _MailHtmlState extends State<_MailHtml> {
   // inside the dark app instead of being recoloured.
   String get _page =>
       '<!doctype html><html><head><meta charset="utf-8">'
+      '<meta http-equiv="Content-Security-Policy" content="script-src \'none\'">'
       '<meta name="viewport" content="width=device-width, initial-scale=1">'
       '<style>html,body{margin:0;background:#fff;color:#111}'
       'body{padding:16px;font:15px/1.6 -apple-system,sans-serif;'
       'overflow-wrap:anywhere}img{max-width:100%;height:auto}</style>'
       '</head><body>${widget.html}</body></html>';
+
+  Future<void> _measure() async {
+    try {
+      final result = await _web.runJavaScriptReturningResult(
+        'document.documentElement.scrollHeight',
+      );
+      final height = double.tryParse('$result');
+      if (height == null || !mounted) return;
+      // shortcut: past ~15000 device pixels a WebView texture can fail to
+      // draw, so very long mails scroll inside the box; paginate if needed.
+      final max = 15000 / MediaQuery.devicePixelRatioOf(context);
+      setState(() => _height = height.clamp(120, max));
+    } catch (e) {
+      debugPrint('mail height probe failed: $e');
+    }
+  }
 
   @override
   void initState() {
@@ -444,12 +948,13 @@ class _MailHtmlState extends State<_MailHtml> {
     if (old.html != widget.html) _web.loadHtmlString(_page);
   }
 
-  // ponytail: fixed height with its own scroll; size to the content via a
-  // height probe if long mails feel cramped.
   @override
   Widget build(BuildContext context) => ClipRRect(
     borderRadius: BorderRadius.circular(14),
-    child: SizedBox(height: 520, child: WebViewWidget(controller: _web)),
+    child: SizedBox(
+      height: _height,
+      child: WebViewWidget(controller: _web),
+    ),
   );
 }
 
@@ -680,18 +1185,23 @@ class OfflineScreen extends StatelessWidget {
   }
 }
 
-/// First step of connecting: pick the mail service. Only Naver works yet.
+/// First step of connecting: pick the mail service. Any number of accounts
+/// can be linked, several per service too.
 class MailProviderScreen extends StatelessWidget {
   const MailProviderScreen({
     super.key,
     required this.from,
-    this.connected,
-    required this.onChanged,
+    required this.accounts,
+    required this.onAdded,
+    required this.onRemoved,
   });
 
   final List<String> from;
-  final String? connected;
-  final void Function(NaverMail? account, List<Mail> unread) onChanged;
+
+  /// Linked accounts, of every service.
+  final List<MailAccount> accounts;
+  final Future<void> Function(MailAccount account, Unread unread) onAdded;
+  final Future<void> Function(MailAccount account) onRemoved;
 
   @override
   Widget build(BuildContext context) {
@@ -767,46 +1277,67 @@ class MailProviderScreen extends StatelessWidget {
       children: [
         const ScreenTitle('메일 연동하기', '어떤 메일을 연결할까요?'),
         const SizedBox(height: 20),
-        provider(
-          '네이버 메일',
-          'N',
-          const Color(0xff03c75a),
-          connected == null ? '아이디와 애플리케이션 비밀번호로 연결해요' : '연결됨 · $connected',
-          onTap: () => Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => MailConnectScreen(
-                from: [...from, '메일 연동하기'],
-                connected: connected,
-                onChanged: onChanged,
+        for (final (service, color, sub) in [
+          (
+            MailService.naver,
+            const Color(0xff03c75a),
+            '아이디와 애플리케이션 비밀번호로 연결해요',
+          ),
+          (MailService.gmail, const Color(0xffea4335), '구글 계정으로 로그인해서 연결해요'),
+        ])
+          provider(
+            service.label,
+            service.mark,
+            color,
+            switch ([
+              for (final a in accounts)
+                if (a.service == service) a.address,
+            ]) {
+              [] => sub,
+              final linked => '연결됨 · ${linked.join(', ')}',
+            },
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => MailConnectScreen(
+                  from: [...from, '메일 연동하기'],
+                  service: service,
+                  accounts: accounts,
+                  onAdded: onAdded,
+                  onRemoved: onRemoved,
+                ),
               ),
             ),
+            linked: accounts.any((a) => a.service == service),
           ),
-          linked: connected != null,
-        ),
-        provider('Gmail', 'G', const Color(0xffea4335), '구글 계정으로 연결해요'),
         provider('Outlook', 'O', const Color(0xff0078d4), '마이크로소프트 계정으로 연결해요'),
       ],
     );
   }
 }
 
-/// Signs in to Naver Mail over IMAP; the password stays in the keychain.
+/// Signs in to one mail service over IMAP: Naver with an app password,
+/// Gmail with Google sign-in. The password or token stays in the keychain.
+/// Linking an address again replaces its saved login.
 class MailConnectScreen extends StatefulWidget {
   const MailConnectScreen({
     super.key,
     required this.from,
-    this.connected,
-    required this.onChanged,
+    required this.service,
+    required this.accounts,
+    required this.onAdded,
+    required this.onRemoved,
   });
 
   final List<String> from;
+  final MailService service;
 
-  /// Address of the account already connected, if any.
-  final String? connected;
+  /// Linked accounts, of every service.
+  final List<MailAccount> accounts;
 
-  /// Called with the new account and its unread mails, or null on disconnect.
-  final void Function(NaverMail? account, List<Mail> unread) onChanged;
+  /// Saves the new account and shows its unread mails.
+  final Future<void> Function(MailAccount account, Unread unread) onAdded;
+  final Future<void> Function(MailAccount account) onRemoved;
 
   @override
   State<MailConnectScreen> createState() => _MailConnectScreenState();
@@ -828,7 +1359,8 @@ class _MailConnectScreenState extends State<MailConnectScreen> {
 
   Future<void> _connect() async {
     if (_busy) return;
-    if (_id.text.trim().isEmpty || _password.text.isEmpty) {
+    final naver = widget.service == MailService.naver;
+    if (naver && (_id.text.trim().isEmpty || _password.text.isEmpty)) {
       setState(() => _error = '아이디와 비밀번호를 모두 넣어 주세요.');
       return;
     }
@@ -836,38 +1368,38 @@ class _MailConnectScreenState extends State<MailConnectScreen> {
       _busy = true;
       _error = null;
     });
-    final account = NaverMail(_id.text, _password.text);
     try {
+      final account = naver
+          ? MailAccount(_id.text, _password.text)
+          : await MailAccount.signInWithGoogle();
       // Fetching doubles as the login check.
       final unread = await account.fetchUnread();
-      await account.save();
-      widget.onChanged(account, unread);
+      await widget.onAdded(account, unread);
       if (!mounted) return;
       // Back home past the provider list.
       Navigator.popUntil(context, (route) => route.isFirst);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            '${account.address}을 연결했어요 · 안 읽은 메일 ${unread.length}건',
-          ),
+          content: Text('${account.address}을 연결했어요 · 안 읽은 메일 ${unread.total}건'),
         ),
       );
     } catch (error) {
-      if (mounted) setState(() => _error = naverMailError(error));
+      debugPrint('mail connect failed: $error');
+      if (mounted) setState(() => _error = mailError(widget.service, error));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
-  Future<void> _disconnect() async {
-    await NaverMail.forget();
-    widget.onChanged(null, const []);
+  Future<void> _disconnect(MailAccount account) async {
+    await account.revoke();
+    await widget.onRemoved(account);
     if (!mounted) return;
     // Back home past the provider list.
     Navigator.popUntil(context, (route) => route.isFirst);
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(const SnackBar(content: Text('메일 연결을 해제했어요')));
+    ).showSnackBar(SnackBar(content: Text('${account.address} 연결을 해제했어요')));
   }
 
   @override
@@ -887,41 +1419,52 @@ class _MailConnectScreenState extends State<MailConnectScreen> {
             borderSide: BorderSide(color: colors.outlineVariant),
           ),
         );
-    final connected = widget.connected;
+    final service = widget.service;
+    final linked = [
+      for (final a in widget.accounts)
+        if (a.service == service) a,
+    ];
+    final naver = service == MailService.naver;
     return _Page(
-      trail: [...widget.from, '네이버 메일'],
+      trail: [...widget.from, service.label],
       children: [
-        const ScreenTitle('메일 연동하기', '네이버 메일'),
+        ScreenTitle('메일 연동하기', service.label),
         const SizedBox(height: 20),
-        if (connected != null) ...[
-          VoiceCard(
-            child: Row(
-              children: [
-                Icon(Icons.check_circle_rounded, color: colors.primary),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        '연결됨',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
+        if (linked.isNotEmpty) ...[
+          for (final account in linked) ...[
+            VoiceCard(
+              child: Row(
+                children: [
+                  Icon(Icons.check_circle_rounded, color: colors.primary),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          '연결됨',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
-                      ),
-                      Text(connected, style: hint),
-                    ],
+                        Text(account.address, style: hint),
+                      ],
+                    ),
                   ),
-                ),
-                TextButton(onPressed: _disconnect, child: const Text('연결 해제')),
-              ],
+                  TextButton(
+                    onPressed: () => _disconnect(account),
+                    child: const Text('연결 해제'),
+                  ),
+                ],
+              ),
             ),
-          ),
-          const SizedBox(height: 28),
-          Text('다른 계정으로 바꾸기', style: hint),
+            const SizedBox(height: 10),
+          ],
+          const SizedBox(height: 18),
+          Text('다른 계정 추가하기', style: hint),
           const SizedBox(height: 12),
-        ] else ...[
+        ] else if (naver) ...[
           Text(
             '네이버는 외부 앱에서 메일을 열 때 2단계 인증과 '
             '애플리케이션 비밀번호를 꼭 쓰도록 하고 있어요. '
@@ -961,40 +1504,48 @@ class _MailConnectScreenState extends State<MailConnectScreen> {
             detail: '1번에서 만든 비밀번호를 그대로 붙여 넣어요. 평소 로그인 비밀번호로는 연결되지 않아요.',
           ),
           const SizedBox(height: 24),
+        ] else ...[
+          Text(
+            '버튼을 누르면 구글 로그인 화면이 열려요. '
+            '계정을 고르고 메일 접근을 허용하면 바로 연결돼요. '
+            '앱 비밀번호나 IMAP 설정은 필요 없어요.',
+            style: hint.copyWith(height: 1.6),
+          ),
         ],
-        AutofillGroup(
-          child: Column(
-            children: [
-              TextField(
-                controller: _id,
-                enabled: !_busy,
-                autofillHints: const [AutofillHints.username],
-                textInputAction: TextInputAction.next,
-                decoration: field('네이버 아이디', suffix: '@naver.com'),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _password,
-                enabled: !_busy,
-                obscureText: _hidden,
-                autofillHints: const [AutofillHints.password],
-                onSubmitted: (_) => _connect(),
-                decoration: field(
-                  '애플리케이션 비밀번호',
-                  icon: IconButton(
-                    tooltip: _hidden ? '비밀번호 보기' : '비밀번호 숨기기',
-                    onPressed: () => setState(() => _hidden = !_hidden),
-                    icon: Icon(
-                      _hidden
-                          ? Icons.visibility_outlined
-                          : Icons.visibility_off_outlined,
+        if (naver)
+          AutofillGroup(
+            child: Column(
+              children: [
+                TextField(
+                  controller: _id,
+                  enabled: !_busy,
+                  autofillHints: const [AutofillHints.username],
+                  textInputAction: TextInputAction.next,
+                  decoration: field('네이버 아이디', suffix: '@naver.com'),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _password,
+                  enabled: !_busy,
+                  obscureText: _hidden,
+                  autofillHints: const [AutofillHints.password],
+                  onSubmitted: (_) => _connect(),
+                  decoration: field(
+                    '애플리케이션 비밀번호',
+                    icon: IconButton(
+                      tooltip: _hidden ? '비밀번호 보기' : '비밀번호 숨기기',
+                      onPressed: () => setState(() => _hidden = !_hidden),
+                      icon: Icon(
+                        _hidden
+                            ? Icons.visibility_outlined
+                            : Icons.visibility_off_outlined,
+                      ),
                     ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
         if (_error case final error?) ...[
           const SizedBox(height: 12),
           Semantics(
@@ -1013,12 +1564,15 @@ class _MailConnectScreenState extends State<MailConnectScreen> {
                   dimension: 22,
                   child: CircularProgressIndicator(strokeWidth: 2.5),
                 )
-              : const Text('연결하기'),
+              : Text(naver ? '연결하기' : 'Google로 로그인'),
         ),
         const SizedBox(height: 14),
         Text(
-          '비밀번호는 이 기기의 보안 저장소(키체인)에만 저장돼요.\n'
-          '메일은 다른 서버를 거치지 않고 네이버와 직접 주고받아요.',
+          naver
+              ? '비밀번호는 이 기기의 보안 저장소에만 저장돼요.\n'
+                    '메일은 다른 서버를 거치지 않고 네이버와 직접 주고받아요.'
+              : '구글 비밀번호는 앱이 보지 않아요. 구글이 준 접근 권한만\n'
+                    '이 기기의 보안 저장소에 저장하고, 메일은 구글과 직접 주고받아요.',
           textAlign: TextAlign.center,
           style: hint.copyWith(fontSize: 13, height: 1.5),
         ),
@@ -1057,7 +1611,7 @@ Future<void> _open(BuildContext context, Uri url) async {
   );
 }
 
-/// One numbered setup step, with a button that opens the Naver page for it.
+/// One numbered setup step, with a button that opens the settings page for it.
 class _SetupStep extends StatelessWidget {
   const _SetupStep({
     required this.number,
@@ -1188,4 +1742,195 @@ class _StatusChip extends StatelessWidget {
       style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: color),
     ),
   );
+}
+
+/// Choices from 앱 설정, kept in a JSON file in the app's support folder.
+class AppSettings {
+  const AppSettings({this.listSize = 20, this.checkMinutes = 0});
+
+  /// Mails per account in a mail list.
+  final int listSize;
+
+  /// How often home checks for new mail; 0 is never.
+  final int checkMinutes;
+
+  AppSettings copyWith({int? listSize, int? checkMinutes}) => AppSettings(
+    listSize: listSize ?? this.listSize,
+    checkMinutes: checkMinutes ?? this.checkMinutes,
+  );
+
+  static Future<File> get _file async =>
+      File('${(await getApplicationSupportDirectory()).path}/settings.json');
+
+  /// The saved settings, or the defaults if there are none yet.
+  static Future<AppSettings> load() async {
+    try {
+      final json = jsonDecode(await (await _file).readAsString());
+      return AppSettings(
+        listSize: json['listSize'] as int? ?? 20,
+        checkMinutes: json['checkMinutes'] as int? ?? 0,
+      );
+    } catch (_) {
+      return const AppSettings();
+    }
+  }
+
+  Future<void> save() async => (await _file).writeAsString(
+    jsonEncode({'listSize': listSize, 'checkMinutes': checkMinutes}),
+  );
+}
+
+/// 앱 설정: linked mail accounts, how mail is fetched, and what's coming.
+class SettingsScreen extends StatefulWidget {
+  const SettingsScreen({
+    super.key,
+    required this.from,
+    required this.accounts,
+    required this.settings,
+    required this.onChanged,
+    required this.accountsScreen,
+  });
+
+  final List<String> from;
+  final List<MailAccount> accounts;
+  final AppSettings settings;
+  final void Function(AppSettings) onChanged;
+
+  /// The account list to open, given its breadcrumb.
+  final Widget Function(List<String> from) accountsScreen;
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  late var _settings = widget.settings;
+
+  void _set(AppSettings settings) {
+    setState(() => _settings = settings);
+    widget.onChanged(settings);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final trail = [...widget.from, '앱 설정'];
+    final hint = TextStyle(fontSize: 14, color: colors.onSurfaceVariant);
+    Widget heading(String text) => Padding(
+      padding: const EdgeInsets.fromLTRB(4, 24, 4, 10),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 15,
+          fontWeight: FontWeight.w700,
+          color: colors.onSurfaceVariant,
+        ),
+      ),
+    );
+    Widget row(
+      String title,
+      String sub,
+      Widget trailing, {
+      VoidCallback? onTap,
+    }) => Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: VoiceCard(
+        onTap: onTap,
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(sub, style: hint),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            trailing,
+          ],
+        ),
+      ),
+    );
+    Widget choices(
+      int value,
+      List<(int, String)> options,
+      void Function(int) onPick,
+    ) => SegmentedButton<int>(
+      showSelectedIcon: false,
+      segments: [
+        for (final (v, label) in options)
+          ButtonSegment(value: v, label: Text(label)),
+      ],
+      selected: {value},
+      onSelectionChanged: (picked) => onPick(picked.single),
+    );
+    final soon = _StatusChip('곧 지원', colors.onSurfaceVariant);
+    return _Page(
+      trail: trail,
+      children: [
+        const ScreenTitle('앱 설정', '내 메일 공간 설정'),
+        heading('메일 계정'),
+        row(
+          '연결한 메일',
+          widget.accounts.isEmpty
+              ? '아직 연결한 메일이 없어요'
+              : [for (final a in widget.accounts) a.address].join('\n'),
+          Icon(Icons.chevron_right_rounded, color: colors.onSurfaceVariant),
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => widget.accountsScreen(trail)),
+          ),
+        ),
+        heading('메일 가져오기'),
+        row(
+          '새 메일 확인',
+          '홈의 안 읽은 메일 수를 다시 불러와요',
+          choices(_settings.checkMinutes, const [
+            (0, '끄기'),
+            (5, '5분'),
+            (15, '15분'),
+          ], (v) => _set(_settings.copyWith(checkMinutes: v))),
+        ),
+        row(
+          '목록에 보여줄 메일',
+          '계정마다 최근 몇 건까지 불러올지',
+          choices(_settings.listSize, const [
+            (20, '20건'),
+            (50, '50건'),
+            (100, '100건'),
+          ], (v) => _set(_settings.copyWith(listSize: v))),
+        ),
+        // The phone app stands alone, so only desktop has a phone to link.
+        if (isDesktop) ...[
+          heading('폰 연결'),
+          row('폰과 연결하기', '폰에서 말로 이 데스크탑의 메일을 듣고 답장해요', soon),
+        ],
+        heading('알림'),
+        row('새 메일 알림', '새 메일이 오면 알려 드려요', soon),
+        heading('정보'),
+        row(
+          '개인정보',
+          '메일은 우리 서버를 거치지 않고 이 기기에서만 불러와요. '
+              '비밀번호와 로그인 정보는 기기의 보안 저장소에 저장돼요.',
+          const SizedBox.shrink(),
+        ),
+        row(
+          '구글 계정 권한 관리',
+          '구글에서 이 앱의 메일 접근 권한을 직접 확인하거나 해제해요',
+          Icon(Icons.open_in_new_rounded, color: colors.onSurfaceVariant),
+          onTap: () =>
+              launchUrl(Uri.parse('https://myaccount.google.com/permissions')),
+        ),
+      ],
+    );
+  }
 }

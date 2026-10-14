@@ -1,4 +1,4 @@
-package com.example.alpha_mail
+package com.applegend.alphamail
 
 import io.flutter.embedding.android.FlutterActivity
 

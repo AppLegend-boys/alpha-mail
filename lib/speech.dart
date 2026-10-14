@@ -11,7 +11,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
-import 'naver_mail.dart';
+import 'mail_account.dart';
 import 'screens.dart';
 
 /// Little-endian signed 16-bit PCM to normalized float samples in [-1, 1).
@@ -237,12 +237,29 @@ class _SpeechScreenState extends State<SpeechScreen>
   bool _listening = false;
   bool _error = false;
 
-  /// Connected Naver account and its unread mails; mock mails until then.
-  NaverMail? _account;
-  List<Mail>? _unread;
-  String? _mailError;
+  /// Linked mail accounts, and each one's unread mails or load error by
+  /// address; mock mails until one is linked.
+  List<MailAccount> _accounts = const [];
+  final Map<String, List<Mail>> _unread = {};
+  final Map<String, int> _unreadTotal = {};
+  final Map<String, String> _mailErrors = {};
 
-  List<Mail> get _mails => _account == null ? mockMails : _unread ?? const [];
+  /// Unread mails of every account, newest first.
+  List<Mail> get _mails => _accounts.isEmpty
+      ? mockMails
+      : ([for (final a in _accounts) ...?_unread[a.address]]..sort(
+          (a, b) => (b.date ?? DateTime(0)).compareTo(a.date ?? DateTime(0)),
+        ));
+
+  /// Still fetching some account, with nothing failed or loaded for it.
+  String? get _mailError =>
+      _mailErrors.isEmpty ? null : _mailErrors.values.join('\n');
+
+  String get _source => switch (_accounts) {
+    [] => '예시 메일',
+    [final only] => only.service.label,
+    _ => '메일 ${_accounts.length}개 계정',
+  };
 
   @override
   void initState() {
@@ -250,51 +267,144 @@ class _SpeechScreenState extends State<SpeechScreen>
     // Desktop starts with mail only: no recogniser, no model downloads.
     if (!isDesktop) _init();
     _loadMail();
+    AppSettings.load().then((settings) {
+      if (!mounted) return;
+      setState(() => _settings = settings);
+      _scheduleCheck();
+    });
+  }
+
+  AppSettings _settings = const AppSettings();
+  Timer? _checker;
+
+  /// Re-fetches every account's unread count as often as 앱 설정 says.
+  void _scheduleCheck() {
+    _checker?.cancel();
+    _checker = _settings.checkMinutes == 0
+        ? null
+        : Timer.periodic(Duration(minutes: _settings.checkMinutes), (_) {
+            for (final account in _accounts) {
+              _fetch(account);
+            }
+          });
+  }
+
+  void _openSettings() {
+    _closeDrawer();
+    _content.currentState?.popUntil((route) => route.isFirst);
+    _push(
+      section: 'settings',
+      SettingsScreen(
+        from: [homeLabel],
+        accounts: _accounts,
+        settings: _settings,
+        onChanged: (settings) {
+          setState(() => _settings = settings);
+          settings.save();
+          _scheduleCheck();
+        },
+        accountsScreen: _providerScreen,
+      ),
+    );
   }
 
   Future<void> _loadMail() async {
-    final NaverMail? account;
+    final List<MailAccount> accounts;
     try {
-      account = await NaverMail.load();
+      accounts = await MailAccount.loadAll();
     } catch (_) {
-      // Without this the account just looked unlinked, as if it was lost.
+      // Without this the accounts just looked unlinked, as if they were lost.
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            duration: Duration(seconds: 10),
+          SnackBar(
+            duration: const Duration(seconds: 10),
             content: Text(
-              '키체인 접근이 허용되지 않아 저장된 메일 계정을 불러오지 못했어요. '
-              '앱을 다시 켜고 허락 창에서 [항상 허용]을 눌러 주세요.',
+              // Only macOS asks before the app may read its keychain item.
+              Platform.isMacOS
+                  ? '키체인 접근이 허용되지 않아 저장된 메일 계정을 불러오지 못했어요. '
+                        '앱을 다시 켜고 허락 창에서 [항상 허용]을 눌러 주세요.'
+                  : '저장된 메일 계정을 불러오지 못했어요. 앱을 다시 켜 주세요.',
             ),
           ),
         );
       }
       return;
     }
-    if (account == null || !mounted) return;
-    setState(() => _account = account);
+    if (!mounted) return;
+    setState(() => _accounts = accounts);
+    await Future.wait(accounts.map(_fetch));
+  }
+
+  Future<void> _fetch(MailAccount account) async {
     try {
       final unread = await account.fetchUnread();
-      if (mounted) setState(() => _unread = unread);
+      if (mounted) setState(() => _setUnread(account, unread));
     } catch (error) {
-      if (mounted) setState(() => _mailError = naverMailError(error));
+      final message =
+          '${account.address}: ${mailError(account.service, error)}';
+      if (mounted) setState(() => _mailErrors[account.address] = message);
     }
+  }
+
+  void _setUnread(MailAccount account, Unread unread) {
+    _unread[account.address] = unread.mails;
+    _unreadTotal[account.address] = unread.total;
+    _mailErrors.remove(account.address);
+  }
+
+  /// Drops a mail just marked read from its account's unread list.
+  void _onRead(Mail mail) {
+    final address = mail.account?.address;
+    if (!mounted || address == null) return;
+    final unread = _unread[address];
+    // Opened twice: already counted. Matched by UID, since 전체 메일
+    // fetches its own copy of the same mail.
+    if (unread == null || !unread.any((m) => m.uid == mail.uid)) return;
+    // A new list: the open screens still page through the old one.
+    setState(() {
+      _unread[address] = [
+        for (final m in unread)
+          if (m.uid != mail.uid) m,
+      ];
+      _unreadTotal.update(address, (n) => n - 1);
+    });
   }
 
   void _openConnect() {
     _closeDrawer();
-    _push(
-      MailProviderScreen(
-        from: [homeLabel],
-        connected: _account?.address,
-        onChanged: (account, unread) => setState(() {
-          _account = account;
-          _unread = unread;
-          _mailError = null;
-        }),
-      ),
-    );
+    _content.currentState?.popUntil((route) => route.isFirst);
+    _push(section: 'connect', _providerScreen([homeLabel]));
   }
+
+  Widget _providerScreen(List<String> from) => MailProviderScreen(
+    from: from,
+    accounts: _accounts,
+    onAdded: (account, unread) async {
+      final accounts = [
+        for (final a in _accounts)
+          if (a.address != account.address) a,
+        account,
+      ];
+      await MailAccount.saveAll(accounts);
+      setState(() {
+        _accounts = accounts;
+        _setUnread(account, unread);
+      });
+    },
+    onRemoved: (account) async {
+      final accounts = [
+        for (final a in _accounts)
+          if (a.address != account.address) a,
+      ];
+      await MailAccount.saveAll(accounts);
+      setState(() {
+        _accounts = accounts;
+        _unread.remove(account.address);
+        _unreadTotal.remove(account.address);
+        _mailErrors.remove(account.address);
+      });
+    },
+  );
 
   bool get _loaded => _recognizer != null || _offline != null;
 
@@ -910,19 +1020,45 @@ class _SpeechScreenState extends State<SpeechScreen>
     }
   }
 
+  /// Opens a [MailFolder] from the menu or a home card, [only] one
+  /// account's mail when given.
+  void _openFolder(MailFolder folder, {MailAccount? only}) {
+    _closeDrawer();
+    _content.currentState?.popUntil((route) => route.isFirst);
+    _push(
+      section: folder.name,
+      MailFolderScreen(
+        from: [homeLabel],
+        folder: folder,
+        accounts: _accounts,
+        only: only,
+        limit: _settings.listSize,
+        onRead: _onRead,
+        onAllRead: (account) => setState(() {
+          _unread[account.address] = [];
+          _unreadTotal[account.address] = 0;
+        }),
+        onOpenAll: (only) => _openFolder(MailFolder.all, only: only),
+      ),
+    );
+  }
+
   Future<void> _openBriefing() async {
+    final mails = _mails;
     if (_opening) return;
     _opening = true;
     try {
       if (_listening) await _toggleListening();
       if (!mounted) return;
-      if (_mails.isEmpty) {
+      if (mails.isEmpty) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text(_mailError ?? '안 읽은 메일이 없어요')));
         return;
       }
-      await _push(BriefingScreen(from: [homeLabel], mails: _mails));
+      await _push(
+        BriefingScreen(from: [homeLabel], mails: mails, onRead: _onRead),
+      );
     } finally {
       _opening = false;
     }
@@ -945,6 +1081,7 @@ class _SpeechScreenState extends State<SpeechScreen>
   @override
   void dispose() {
     _downloadSub?.cancel();
+    _checker?.cancel();
     _pulse.dispose();
     _audioSub?.cancel();
     _recorder.dispose();
@@ -952,22 +1089,30 @@ class _SpeechScreenState extends State<SpeechScreen>
     super.dispose();
   }
 
+  /// Menu item lit up in the sidebar; [_push] sets it, and it goes back to
+  /// home once that screen closes.
+  String _section = 'home';
+
+  /// Sidebar shrunk to an icon rail (wide windows only).
+  bool _railOnly = false;
+
+  /// Bumped per [_push], so a screen closing after another menu item has
+  /// opened leaves the newer highlight alone.
+  int _pushes = 0;
+
   /// Wide windows open screens in the content pane beside the sidebar.
-  Future<void> _push(Widget screen) =>
-      (_content.currentState ?? Navigator.of(context)).push(
-        MaterialPageRoute(builder: (_) => screen),
-      );
+  Future<void> _push(Widget screen, {String? section}) async {
+    final push = ++_pushes;
+    if (section != null) setState(() => _section = section);
+    await (_content.currentState ?? Navigator.of(context)).push(
+      MaterialPageRoute<void>(builder: (_) => screen),
+    );
+    if (mounted && push == _pushes) setState(() => _section = 'home');
+  }
 
   /// Menu taps close the drawer; the sidebar has none to close.
   void _closeDrawer() {
     if (_scaffold.currentState?.isDrawerOpen ?? false) Navigator.pop(context);
-  }
-
-  void _soon(String what) {
-    _closeDrawer();
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('$what은 준비 중이에요 (목업)')));
   }
 
   void _pickModel() {
@@ -993,6 +1138,51 @@ class _SpeechScreenState extends State<SpeechScreen>
       builder: _modelList,
     );
   }
+
+  Widget _mailCard(
+    ColorScheme colors,
+    String mark,
+    String title,
+    String subtitle,
+    VoidCallback onTap,
+  ) => VoiceCard(
+    onTap: onTap,
+    child: Row(
+      children: [
+        CircleAvatar(
+          radius: 14,
+          backgroundColor: colors.primaryContainer,
+          child: Text(
+            mark,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+              color: colors.primary,
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+              ),
+              Text(
+                subtitle,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
+              ),
+            ],
+          ),
+        ),
+        Icon(Icons.chevron_right_rounded, color: colors.onSurfaceVariant),
+      ],
+    ),
+  );
 
   Widget _modelList(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
@@ -1036,34 +1226,67 @@ class _SpeechScreenState extends State<SpeechScreen>
   }
 
   /// Menu body: inside the drawer on phones, the sidebar on wide windows.
-  Widget _menu(ColorScheme colors) {
+  /// A folded [sidebar] shows icons only, with the label as a tooltip.
+  Widget _menu(ColorScheme colors, {bool sidebar = false}) {
+    final rail = sidebar && _railOnly;
     Widget item(
       String label, {
+      required IconData icon,
       bool selected = false,
-      IconData? icon,
       Color? iconColor,
       String? sub,
       required VoidCallback onTap,
-    }) => Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3),
-      child: ListTile(
-        selected: selected,
-        selectedTileColor: colors.primaryContainer,
-        selectedColor: colors.onPrimaryContainer,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        leading: selected
-            ? Icon(Icons.circle, size: 10, color: colors.primary)
-            : icon == null
-            ? null
-            : Icon(icon, color: iconColor ?? colors.onSurfaceVariant),
-        minLeadingWidth: 10,
-        title: Text(
-          label,
-          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+    }) {
+      // A ListTile with no room for a title throws in layout, so the rail
+      // uses plain icon buttons.
+      if (rail) {
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 3),
+          child: IconButton(
+            tooltip: label,
+            onPressed: onTap,
+            icon: Icon(icon),
+            style: IconButton.styleFrom(
+              minimumSize: const Size.fromHeight(52),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              backgroundColor: selected ? colors.primaryContainer : null,
+              foregroundColor: selected
+                  ? colors.onPrimaryContainer
+                  : iconColor ?? colors.onSurfaceVariant,
+            ),
+          ),
+        );
+      }
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: ListTile(
+          selected: selected,
+          selectedTileColor: colors.primaryContainer,
+          selectedColor: colors.onPrimaryContainer,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          leading: Icon(
+            icon,
+            color: selected ? null : iconColor ?? colors.onSurfaceVariant,
+          ),
+          minLeadingWidth: 10,
+          title: Text(
+            label,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          ),
+          subtitle: sub == null ? null : Text(sub),
+          onTap: onTap,
         ),
-        subtitle: sub == null ? null : Text(sub),
-        onTap: onTap,
-      ),
+      );
+    }
+
+    final toggle = IconButton(
+      tooltip: rail ? '메뉴 펼치기' : '메뉴 접기',
+      icon: Icon(rail ? Icons.menu_rounded : Icons.menu_open_rounded),
+      onPressed: () => setState(() => _railOnly = !rail),
     );
     return SafeArea(
       child: Padding(
@@ -1071,37 +1294,42 @@ class _SpeechScreenState extends State<SpeechScreen>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 6),
-              child: _Brand(),
-            ),
+            if (rail)
+              toggle
+            else
+              Row(
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 6),
+                    child: _Brand(),
+                  ),
+                  const Spacer(),
+                  if (sidebar) toggle,
+                ],
+              ),
             Divider(height: 28, color: colors.outlineVariant),
-            ListTile(
-              leading: CircleAvatar(
-                backgroundColor: colors.surfaceContainer,
-                child: const Text('민'),
-              ),
-              title: const Text(
-                '민지님',
-                style: TextStyle(fontWeight: FontWeight.w700),
-              ),
-              subtitle: const Text('개인 메일 공간'),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 6),
-              child: Text(
-                '메뉴',
-                style: TextStyle(color: colors.onSurfaceVariant),
-              ),
-            ),
             item(
               homeLabel,
-              selected: true,
+              icon: Icons.home_rounded,
+              selected: _section == 'home',
               onTap: () {
                 _closeDrawer();
                 _content.currentState?.popUntil((route) => route.isFirst);
               },
             ),
+            if (_accounts.isNotEmpty)
+              for (final (folder, icon) in [
+                (MailFolder.all, Icons.inbox_rounded),
+                (MailFolder.unread, Icons.mark_email_unread_outlined),
+                (MailFolder.sent, Icons.send_outlined),
+              ])
+                item(
+                  folder.label,
+                  icon: icon,
+                  selected: _section == folder.name,
+                  onTap: () => _openFolder(folder),
+                ),
+            Divider(height: 20, color: colors.outlineVariant),
             if (!isDesktop)
               item(
                 '음성 모델',
@@ -1112,55 +1340,61 @@ class _SpeechScreenState extends State<SpeechScreen>
                     : '${_model.label} · ${_model.title}',
                 onTap: _pickModel,
               ),
-            // One entry for mail linking: a call to action until an account
-            // is linked, then a plain item showing which one.
-            if (_account case final account?)
-              item(
-                '메일 연동',
-                icon: Icons.check_circle_rounded,
-                iconColor: colors.primary,
-                sub: '네이버 연결됨 · ${account.address}',
-                onTap: _openConnect,
-              )
-            else
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 3),
-                child: OutlinedButton.icon(
-                  onPressed: _openConnect,
-                  icon: const Icon(Icons.add_rounded),
-                  label: const Text('메일 연동하기'),
-                  style: OutlinedButton.styleFrom(
-                    alignment: Alignment.centerLeft,
-                    minimumSize: const Size.fromHeight(52),
-                    foregroundColor: colors.primary,
-                    backgroundColor: colors.primaryContainer.withValues(
-                      alpha: 0.4,
-                    ),
-                    side: BorderSide(
-                      color: colors.primary.withValues(alpha: 0.5),
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    textStyle: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700,
+            // A call to action until an account is linked; after that the
+            // accounts live in 앱 설정.
+            if (_accounts.isEmpty)
+              if (rail)
+                item(
+                  '메일 연동하기',
+                  icon: Icons.add_rounded,
+                  iconColor: colors.primary,
+                  onTap: _openConnect,
+                )
+              else
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 3),
+                  child: OutlinedButton.icon(
+                    onPressed: _openConnect,
+                    icon: const Icon(Icons.add_rounded),
+                    label: const Text('메일 연동하기'),
+                    style: OutlinedButton.styleFrom(
+                      alignment: Alignment.centerLeft,
+                      minimumSize: const Size.fromHeight(52),
+                      foregroundColor: colors.primary,
+                      backgroundColor: colors.primaryContainer.withValues(
+                        alpha: 0.4,
+                      ),
+                      side: BorderSide(
+                        color: colors.primary.withValues(alpha: 0.5),
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      textStyle: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                   ),
                 ),
-              ),
-            item('히스토리', onTap: () => _soon('히스토리')),
-            item('앱 설정', onTap: () => _soon('앱 설정')),
+            item(
+              '앱 설정',
+              icon: Icons.settings_outlined,
+              selected: _section == 'settings',
+              onTap: _openSettings,
+            ),
             item(
               '오프라인 화면 미리보기',
               icon: Icons.cloud_off_rounded,
+              selected: _section == 'offline',
               onTap: () {
                 _closeDrawer();
-                _push(OfflineScreen(from: [homeLabel]));
+                _content.currentState?.popUntil((route) => route.isFirst);
+                _push(section: 'offline', OfflineScreen(from: [homeLabel]));
               },
             ),
             const Spacer(),
-            if (!isDesktop)
+            if (!isDesktop && !rail)
               VoiceCard(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -1260,7 +1494,7 @@ class _SpeechScreenState extends State<SpeechScreen>
           ],
         // 01 voice home ⇄ 02 listening share this screen.
         if (_listening) ...[
-          ScreenTitle('네이버메일', '안 읽은 메일 ${_mails.length}건'),
+          ScreenTitle(_source, '안 읽은 메일 ${_mails.length}건'),
           const SizedBox(height: 18),
           VoiceCard(
             child: Column(
@@ -1279,59 +1513,39 @@ class _SpeechScreenState extends State<SpeechScreen>
             ),
           ),
         ] else ...[
-          const ScreenTitle('운전 중에도', '메일을 듣고\n말로 답장하세요'),
+          isDesktop
+              ? const ScreenTitle('메일 홈', '오늘 확인할 메일')
+              : const ScreenTitle('운전 중에도', '메일을 듣고\n말로 답장하세요'),
           const SizedBox(height: 18),
-          VoiceCard(
-            onTap: _openBriefing,
-            child: Row(
-              children: [
-                CircleAvatar(
-                  radius: 14,
-                  backgroundColor: colors.primaryContainer,
-                  child: Text(
-                    'N',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w800,
-                      color: colors.primary,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        _account == null
-                            ? '예시 메일 · ${mockMails.length}건'
-                            : _unread == null && _mailError == null
-                            ? '네이버메일 · 불러오는 중'
-                            : '네이버메일 · ${_mails.length}건',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      Text(
-                        _account == null
-                            ? '메일 연동하기를 누르면 내 메일로 바뀌어요'
-                            : _mailError ?? '안 읽은 메일',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: colors.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Icon(
-                  Icons.chevron_right_rounded,
-                  color: colors.onSurfaceVariant,
-                ),
-              ],
+          if (_accounts.isEmpty)
+            _mailCard(
+              colors,
+              'N',
+              '예시 메일 · 안 읽은 메일 ${mockMails.length}건',
+              '메일 연동하기를 누르면 내 메일로 바뀌어요',
+              () => _openFolder(MailFolder.unread),
             ),
-          ),
+          for (final (i, a) in _accounts.indexed) ...[
+            if (i > 0) const SizedBox(height: 10),
+            _mailCard(
+              colors,
+              a.service.mark,
+              switch (_unread[a.address]) {
+                null when _mailErrors[a.address] == null =>
+                  '${a.service.label} · 불러오는 중',
+                null => '${a.service.label} · 불러오지 못했어요',
+                _ => '${a.service.label} · 안 읽은 메일 ${_unreadTotal[a.address]}건',
+              },
+              _mailErrors[a.address] ?? a.address,
+              // Nothing unread: the whole inbox is what's left to see.
+              () => _openFolder(
+                _unreadTotal[a.address] == 0
+                    ? MailFolder.all
+                    : MailFolder.unread,
+                only: a,
+              ),
+            ),
+          ],
         ],
         if (!isDesktop) ...[
           const SizedBox(height: 28),
@@ -1450,13 +1664,13 @@ class _SpeechScreenState extends State<SpeechScreen>
                 ? Row(
                     children: [
                       Container(
-                        width: 288,
+                        width: _railOnly ? 84 : 288,
                         decoration: BoxDecoration(
                           border: Border(
                             right: BorderSide(color: colors.outlineVariant),
                           ),
                         ),
-                        child: _menu(colors),
+                        child: _menu(colors, sidebar: true),
                       ),
                       Expanded(
                         child: Navigator(

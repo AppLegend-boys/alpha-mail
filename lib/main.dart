@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'screens.dart';
 import 'speech.dart';
 
 void main() {
@@ -55,14 +56,81 @@ ThemeData _theme() {
   );
 }
 
-class AlphaMailApp extends StatelessWidget {
+class AlphaMailApp extends StatefulWidget {
   const AlphaMailApp({super.key});
+
+  @override
+  State<AlphaMailApp> createState() => _AlphaMailAppState();
+}
+
+class _AlphaMailAppState extends State<AlphaMailApp> {
+  // Phones only: Android 12+ lets an icon theme (Samsung) replace the system
+  // splash icon, so the brand screen is drawn here, over the home loading
+  // underneath.
+  bool _splash = !isDesktop;
+
+  @override
+  void initState() {
+    super.initState();
+    if (_splash) {
+      Future.delayed(const Duration(milliseconds: 1400), () {
+        if (mounted) setState(() => _splash = false);
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: 'Alpha Mail',
     debugShowCheckedModeBanner: false,
     theme: _theme(),
-    home: const SpeechScreen(),
+    home: Stack(
+      children: [
+        const SpeechScreen(),
+        IgnorePointer(
+          ignoring: !_splash,
+          child: AnimatedOpacity(
+            opacity: _splash ? 1 : 0,
+            duration: const Duration(milliseconds: 300),
+            child: const _Splash(),
+          ),
+        ),
+      ],
+    ),
   );
+}
+
+/// Ink screen with the mint lockup and the app's promise.
+class _Splash extends StatelessWidget {
+  const _Splash();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Material(
+      color: colors.surface,
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Image.asset(
+              'assets/brand/logo-horizontal.png',
+              width: 220,
+              filterQuality: FilterQuality.medium,
+              semanticLabel: 'Alpha-mail',
+            ),
+            const SizedBox(height: 20),
+            Text(
+              '메일을 듣고 말로 답장하세요',
+              style: TextStyle(
+                fontSize: 17,
+                fontWeight: FontWeight.w600,
+                color: colors.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }

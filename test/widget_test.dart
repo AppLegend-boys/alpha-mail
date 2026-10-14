@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:alpha_mail/speech.dart';
-import 'package:alpha_mail/naver_mail.dart';
+import 'package:alpha_mail/mail_account.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -48,8 +48,27 @@ void main() {
     expect(htmlToText(html), '안녕하세요 김서연입니다.\n견적서 & 일정\nA<B\n끝');
   });
 
-  test('NaverMail keeps only the ID part of an address', () {
-    expect(NaverMail(' minji@naver.com ', 'pw').id, 'minji');
-    expect(NaverMail('minji', 'pw').address, 'minji@naver.com');
+  test('MailAccount keeps only the ID part of a Naver address', () {
+    expect(MailAccount(' minji@naver.com ', 'pw').id, 'minji');
+    expect(MailAccount('minji', 'pw').address, 'minji@naver.com');
+    // Gmail keeps the whole address, Workspace domains included.
+    final gmail = MailAccount.google('minji@company.com', 'token');
+    expect(gmail.service, MailService.gmail);
+    expect(gmail.address, 'minji@company.com');
+  });
+
+  test('MailAccount reads every saved format', () {
+    final legacy = MailAccount.fromJson({'id': 'minji', 'password': 'pw'})!;
+    expect(
+      (legacy.service, legacy.address),
+      (MailService.naver, 'minji@naver.com'),
+    );
+    final gmail = MailAccount.fromJson({
+      'service': 'gmail',
+      'address': 'minji@gmail.com',
+      'secret': 'token',
+    })!;
+    expect((gmail.service, gmail.secret), (MailService.gmail, 'token'));
+    expect(MailAccount.fromJson({'nope': 1}), isNull);
   });
 }
