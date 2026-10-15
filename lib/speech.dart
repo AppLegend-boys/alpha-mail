@@ -212,7 +212,6 @@ class _SpeechScreenState extends State<SpeechScreen>
   sherpa.OnlineStream? _stream;
   // Utterance model (SenseVoice) fed by voice-activity segments.
   _OfflineWorker? _offline;
-  StreamSubscription<bd.TaskUpdate>? _downloadSub;
   SpeechModel? _downloadingModel;
   final _fileProgress = <String, double>{};
   final _failedFiles = <String>{};
@@ -422,8 +421,14 @@ class _SpeechScreenState extends State<SpeechScreen>
 
   Future<void> _initDownloads() async {
     final downloader = bd.FileDownloader();
-    _downloadSub = downloader.updates.listen(_onDownloadUpdate);
     for (final model in SpeechModel.values) {
+      // Per-group callbacks, not the single-listener `updates` stream, which
+      // the summary model's downloader (flutter_gemma) also needs.
+      downloader.registerCallbacks(
+        group: model.name,
+        taskStatusCallback: _onDownloadUpdate,
+        taskProgressCallback: _onDownloadUpdate,
+      );
       downloader.configureNotificationForGroup(
         model.name,
         running: bd.TaskNotification(
@@ -1080,7 +1085,9 @@ class _SpeechScreenState extends State<SpeechScreen>
 
   @override
   void dispose() {
-    _downloadSub?.cancel();
+    for (final model in SpeechModel.values) {
+      bd.FileDownloader().unregisterCallbacks(group: model.name);
+    }
     _checker?.cancel();
     _pulse.dispose();
     _audioSub?.cancel();

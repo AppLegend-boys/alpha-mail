@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
@@ -10,8 +11,8 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import 'mail_account.dart';
-
-// ponytail: every screen here runs on mock mail until mail sync and TTS exist.
+import 'summary.dart';
+import 'tts.dart';
 
 /// Amber for offline / waiting states (design 06).
 const amber = Color(0xfff2a93b);
@@ -607,6 +608,7 @@ class _MailFolderScreenState extends State<MailFolderScreen> {
                   mails: mails,
                   index: i,
                   onRead: _onRead,
+                  autoRead: false,
                 ),
               ),
             ),
@@ -726,7 +728,7 @@ class MailTile extends StatelessWidget {
   }
 }
 
-/// 03 — reads one unread mail aloud, with a waveform while "playing".
+/// 03 — reads one unread mail aloud, with a waveform while it plays.
 class BriefingScreen extends StatefulWidget {
   const BriefingScreen({
     super.key,
@@ -734,6 +736,7 @@ class BriefingScreen extends StatefulWidget {
     this.index = 0,
     this.mails = mockMails,
     this.onRead,
+    this.autoRead = true,
   });
 
   /// Menu path of the screen that opened this one.
@@ -743,6 +746,10 @@ class BriefingScreen extends StatefulWidget {
 
   /// Called once a mail shown here is marked read on the server.
   final void Function(Mail)? onRead;
+
+  /// Starts reading as soon as a mail shows; off when opened from a list,
+  /// where the user may just be looking.
+  final bool autoRead;
 
   @override
   State<BriefingScreen> createState() => _BriefingScreenState();
@@ -754,22 +761,62 @@ class _BriefingScreenState extends State<BriefingScreen>
   late final _wave = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 1200),
-  )..repeat();
+  );
+  final _reader = Reader.instance;
 
   @override
   void initState() {
     super.initState();
+    _reader.speaking.addListener(_syncWave);
     markRead(widget.mails[_index], widget.onRead);
+    if (widget.autoRead) _read();
   }
 
   @override
   void dispose() {
+    _reader.speaking.removeListener(_syncWave);
+    _reader.stop();
     _wave.dispose();
     super.dispose();
   }
 
+  void _syncWave() {
+    _reader.speaking.value ? _wave.repeat() : _wave.stop();
+    setState(() {});
+  }
+
+  /// Reads who and what, then the AI summary once it's written (the whole
+  /// body if the summary model isn't downloaded or the summary fails).
+  Future<void> _read() async {
+    final mail = widget.mails[_index];
+    final summarizer = Summarizer.instance;
+    final rest = await summarizer.installed
+        ? summarizer
+              .summarize(mail)
+              .last
+              .then(
+                (summary) => '요약입니다. $summary',
+                onError: (Object e) {
+                  debugPrint('summary for reading failed: $e');
+                  return spokenBody(mail.body);
+                },
+              )
+        : Future.value(spokenBody(mail.body));
+    if (!mounted || widget.mails[_index] != mail) return;
+    final problem = await _reader.speak(
+      '${mail.from}.\n${mail.subject}.',
+      then: rest,
+    );
+    if (problem != null && mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(problem)));
+    }
+  }
+
   void _next() {
     if (_index == widget.mails.length - 1) {
+      _reader.stop();
       Navigator.pop(context);
       ScaffoldMessenger.of(
         context,
@@ -778,6 +825,11 @@ class _BriefingScreenState extends State<BriefingScreen>
     }
     setState(() => _index++);
     markRead(widget.mails[_index], widget.onRead);
+    if (widget.autoRead || _reader.speaking.value) {
+      _read();
+    } else {
+      _reader.stop();
+    }
   }
 
   @override
@@ -815,17 +867,20 @@ class _BriefingScreenState extends State<BriefingScreen>
         const SizedBox(height: 16),
         Divider(color: colors.outlineVariant),
         const SizedBox(height: 16),
+        _SummaryCard(mail),
+        const SizedBox(height: 16),
         if (mail.html case final html?)
           _MailHtml(html)
         else
           Text(mail.body, style: const TextStyle(fontSize: 18, height: 1.7)),
         const SizedBox(height: 24),
         VoiceCard(
+          onTap: () => _reader.speaking.value ? _reader.stop() : _read(),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                '지금 읽어주는 중',
+                _reader.speaking.value ? '지금 읽어주는 중 · 눌러서 멈추기' : '눌러서 듣기',
                 style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
               ),
               const SizedBox(height: 10),
@@ -857,13 +912,16 @@ class _BriefingScreenState extends State<BriefingScreen>
           left: '다음 메일',
           right: '답장하기',
           onLeft: _next,
-          onRight: () => Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) =>
-                  ReplyScreen(mail: mail, from: [...widget.from, '메일 읽기']),
-            ),
-          ),
+          onRight: () {
+            _reader.stop();
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) =>
+                    ReplyScreen(mail: mail, from: [...widget.from, '메일 읽기']),
+              ),
+            );
+          },
         ),
         const SizedBox(height: 14),
         Text(
@@ -872,6 +930,148 @@ class _BriefingScreenState extends State<BriefingScreen>
           style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
         ),
       ],
+    );
+  }
+}
+
+/// AI summary of [mail], written on the phone as it's read; offers the
+/// model download the first time. Tap a finished summary to hear it.
+class _SummaryCard extends StatefulWidget {
+  const _SummaryCard(this.mail);
+  final Mail mail;
+
+  @override
+  State<_SummaryCard> createState() => _SummaryCardState();
+}
+
+class _SummaryCardState extends State<_SummaryCard> {
+  final _summarizer = Summarizer.instance;
+  bool? _installed;
+  String _text = '';
+  bool _writing = false;
+  Object? _error;
+  StreamSubscription<String>? _sub;
+
+  @override
+  void initState() {
+    super.initState();
+    _summarizer.progress.addListener(_onProgress);
+    _check();
+  }
+
+  @override
+  void didUpdateWidget(_SummaryCard old) {
+    super.didUpdateWidget(old);
+    if (old.mail != widget.mail && _installed == true) _start();
+  }
+
+  @override
+  void dispose() {
+    _summarizer.progress.removeListener(_onProgress);
+    _sub?.cancel();
+    super.dispose();
+  }
+
+  /// A download started from another mail may finish while this one shows.
+  void _onProgress() {
+    if (_summarizer.progress.value == null && _installed == false) {
+      _check();
+    } else {
+      setState(() {});
+    }
+  }
+
+  Future<void> _check() async {
+    final installed = await _summarizer.installed;
+    if (!mounted) return;
+    setState(() => _installed = installed);
+    if (installed) _start();
+  }
+
+  void _start() {
+    _sub?.cancel();
+    setState(() {
+      _text = '';
+      _error = null;
+      _writing = true;
+    });
+    _sub = _summarizer
+        .summarize(widget.mail)
+        .listen(
+          (text) => setState(() => _text = text),
+          onError: (Object e) {
+            debugPrint('summary failed: $e');
+            setState(() {
+              _error = e;
+              _writing = false;
+            });
+          },
+          onDone: () => setState(() => _writing = false),
+        );
+  }
+
+  Future<void> _download() async {
+    try {
+      await _summarizer.download();
+    } catch (e) {
+      debugPrint('summary model download failed: $e');
+      _summarizer.failed = true;
+      if (mounted) setState(() {});
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final hint = TextStyle(fontSize: 13, color: colors.onSurfaceVariant);
+    final progress = _summarizer.progress.value;
+    final done = _text.isNotEmpty && !_writing && _error == null;
+    final Widget body;
+    if (progress != null) {
+      body = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('요약 모델 받는 중 · $progress% · 앱을 닫아도 계속 받아요', style: hint),
+          const SizedBox(height: 8),
+          LinearProgressIndicator(value: progress / 100),
+        ],
+      );
+    } else if (_installed == false) {
+      body = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            !_summarizer.failed
+                ? '요약 모델(${Summarizer.sizeLabel})을 한 번 받으면 폰 안에서 메일을 '
+                      '요약해요. 와이파이에서 받아 주세요.'
+                : '요약 모델을 받지 못했어요. 연결을 확인하고 다시 받아 주세요.',
+            style: const TextStyle(fontSize: 15, height: 1.6),
+          ),
+          TextButton(onPressed: _download, child: const Text('요약 모델 받기')),
+        ],
+      );
+    } else if (_error != null) {
+      body = Row(
+        children: [
+          const Expanded(child: Text('요약하지 못했어요')),
+          TextButton(onPressed: _start, child: const Text('다시 시도')),
+        ],
+      );
+    } else if (_text.isEmpty) {
+      body = Text(_installed == null ? '' : '요약하는 중…', style: hint);
+    } else {
+      body = Text(_text, style: const TextStyle(fontSize: 17, height: 1.6));
+    }
+    return VoiceCard(
+      onTap: done ? () => Reader.instance.speak(_text) : null,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(done ? 'AI 요약 · 눌러서 듣기' : 'AI 요약', style: hint),
+          const SizedBox(height: 8),
+          body,
+        ],
+      ),
     );
   }
 }
@@ -1003,7 +1203,32 @@ class ReplyScreen extends StatefulWidget {
 }
 
 class _ReplyScreenState extends State<ReplyScreen> {
-  bool _playing = false;
+  final _reader = Reader.instance;
+
+  @override
+  void initState() {
+    super.initState();
+    _reader.speaking.addListener(_redraw);
+  }
+
+  @override
+  void dispose() {
+    _reader.speaking.removeListener(_redraw);
+    _reader.stop();
+    super.dispose();
+  }
+
+  void _redraw() => setState(() {});
+
+  Future<void> _toggle() async {
+    if (_reader.speaking.value) return _reader.stop();
+    final problem = await _reader.speak(widget.mail.draft);
+    if (problem != null && mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(problem)));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1022,12 +1247,14 @@ class _ReplyScreenState extends State<ReplyScreen> {
         ),
         const SizedBox(height: 14),
         VoiceCard(
-          onTap: () => setState(() => _playing = !_playing),
+          onTap: _toggle,
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
           child: Row(
             children: [
               Icon(
-                _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                _reader.speaking.value
+                    ? Icons.pause_rounded
+                    : Icons.play_arrow_rounded,
                 color: colors.primary,
               ),
               const SizedBox(width: 10),
@@ -1037,7 +1264,6 @@ class _ReplyScreenState extends State<ReplyScreen> {
                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                 ),
               ),
-              Text('0:06', style: TextStyle(color: colors.onSurfaceVariant)),
             ],
           ),
         ),
