@@ -53,18 +53,24 @@ class Reader {
 
   /// Reads [text], then [then] once it's ready, cutting off whatever was
   /// being read. A stop while waiting for [then] skips it. Returns why it
-  /// couldn't read, or null.
+  /// couldn't read, [cut] if a later speak or stop cut it off, or null once
+  /// it was read to the end.
   Future<String?> speak(String text, {Future<String>? then}) async {
     final run = ++_run;
     await _tts.stop();
     final problem = await (_ready ??= _setup());
-    if (problem != null || run != _run) return problem;
+    if (problem != null) return problem;
+    if (run != _run) return cut;
     speaking.value = true;
     await _say(text, run);
     if (then != null && run == _run) await _say(await then, run);
-    if (run == _run) speaking.value = false;
+    if (run != _run) return cut;
+    speaking.value = false;
     return null;
   }
+
+  /// What [speak] returns when it was cut off; not a problem to show.
+  static const cut = 'cut';
 
   Future<void> _say(String text, int run) async {
     for (final part in _parts(text)) {

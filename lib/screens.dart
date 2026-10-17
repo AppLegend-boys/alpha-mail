@@ -32,8 +32,13 @@ class Mail {
     this.account,
     this.uid,
     this.seen = false,
+    this.address = '',
   });
   final String from;
+
+  /// Where a reply goes: the reply-to or sender address (the recipient's
+  /// for sent mail); empty for the example mails.
+  final String address;
   final String subject;
   final String body;
 
@@ -852,7 +857,8 @@ class _BriefingScreenState extends State<BriefingScreen>
       '${next ? '다음 메일입니다.\n' : ''}${mail.from}.\n${mail.subject}.',
       then: rest,
     );
-    if (!mounted) return;
+    // Cut off by a tap or another read: that one decides what comes next.
+    if (!mounted || problem == Reader.cut) return;
     if (problem != null) {
       ScaffoldMessenger.of(
         context,
@@ -1278,8 +1284,10 @@ class _MailHtmlState extends State<_MailHtml> {
 
   Future<void> _measure() async {
     try {
+      // The body, not the document: the document is never shorter than the
+      // box itself, so a short mail kept the placeholder height.
       final result = await _web.runJavaScriptReturningResult(
-        'document.documentElement.scrollHeight',
+        'document.body.scrollHeight',
       );
       final height = double.tryParse('$result');
       if (height == null || !mounted) return;
@@ -1374,7 +1382,7 @@ class ComposeScreen extends StatefulWidget {
 
 class _ComposeScreenState extends State<ComposeScreen> {
   final _reader = Reader.instance;
-  late final _to = TextEditingController(text: widget.mail?.from);
+  late final _to = TextEditingController(text: widget.mail?.address);
   late final _subject = TextEditingController(
     text: switch (widget.mail?.subject) {
       null => '',
@@ -1411,7 +1419,7 @@ class _ComposeScreenState extends State<ComposeScreen> {
     if (_reader.speaking.value) return _reader.stop();
     setState(() => _listened = true);
     final problem = await _reader.speak(_body.text);
-    if (problem != null && mounted) {
+    if (problem != null && problem != Reader.cut && mounted) {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(problem)));
@@ -1447,8 +1455,6 @@ class _ComposeScreenState extends State<ComposeScreen> {
             ? '멈추기'
             : _listened
             ? '다시 듣기'
-            : reply
-            ? '초안 듣기'
             : '듣기',
       ),
       children: [

@@ -238,6 +238,9 @@ class _SpeechScreenState extends State<SpeechScreen>
   String _partial = '';
   String _status = '모델을 준비하고 있어요';
   bool _busy = true;
+
+  /// Being deleted, so its card says so instead of 적용 중.
+  SpeechModel? _deleting;
   bool _listening = false;
   bool _error = false;
 
@@ -1036,6 +1039,11 @@ class _SpeechScreenState extends State<SpeechScreen>
     final problem = await reader.speak('안 읽은 메일이 $count건 있어요. 읽어드릴까요?');
     if (!mounted || !_asking) return;
     setState(() => _asking = false);
+    // Cut off (a mail opened, or the mic tapped) or covered by another
+    // screen: listening now would hear the app reading behind it.
+    if (problem == Reader.cut || ModalRoute.of(context)?.isCurrent != true) {
+      return;
+    }
     // No voice: the question is still on screen, so listen anyway.
     if (problem != null) {
       ScaffoldMessenger.of(
@@ -1182,13 +1190,20 @@ class _SpeechScreenState extends State<SpeechScreen>
       ),
     );
     if (ok != true || !mounted || _busy || _listening) return;
+    // Locked while deleting, so nothing downloads or loads this model meanwhile.
+    setState(() {
+      _busy = true;
+      _deleting = model;
+    });
     if (model == _model) _freeModels();
     final dir = Directory(await _modelDir(model));
     if (await dir.exists()) await dir.delete(recursive: true);
     // Old records would start a new download's bar at 99%.
     await bd.FileDownloader().database.deleteAllRecords(group: model.name);
     await _refreshOnPhone();
-    if (!mounted || model != _model) return;
+    _deleting = null;
+    if (!mounted) return;
+    if (model != _model) return setState(() => _busy = false);
     // Carry on with another model already on the phone, if any.
     for (final other in SpeechModel.values) {
       if (await _isDownloaded(other)) {
@@ -1902,7 +1917,8 @@ class _VoiceSettingsScreen extends StatelessWidget {
     final onPhone = home._onPhone.contains(m);
     final inUse = m == home._model && home._loaded;
     final downloading = home._downloadingModel == m;
-    final applying = home._busy && m == home._model;
+    final deleting = home._deleting == m;
+    final applying = deleting || home._busy && m == home._model;
     return VoiceCard(
       borderColor: inUse ? colors.primary : null,
       child: Column(
@@ -1947,7 +1963,7 @@ class _VoiceSettingsScreen extends StatelessWidget {
                     ),
                     const SizedBox(width: 10),
                     Text(
-                      '적용 중…',
+                      deleting ? '삭제 중…' : '적용 중…',
                       style: TextStyle(color: colors.onSurfaceVariant),
                     ),
                   ],

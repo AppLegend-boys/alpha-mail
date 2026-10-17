@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' show Color;
 
+import 'package:cp949_codec/cp949_codec.dart' show cp949;
 import 'package:enough_mail/enough_mail.dart';
 import 'package:flutter_appauth/flutter_appauth.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -96,14 +97,17 @@ class MailAccount {
       case MailService.naver:
         await client.login(id, secret);
       case MailService.gmail:
-        final token = await _appAuth.token(
-          TokenRequest(
-            googleClientId,
-            _googleRedirect,
-            serviceConfiguration: _google,
-            refreshToken: secret,
-          ),
-        );
+        final token = await _appAuth
+            .token(
+              TokenRequest(
+                googleClientId,
+                _googleRedirect,
+                serviceConfiguration: _google,
+                refreshToken: secret,
+              ),
+            )
+            // Seen to never answer after the app was started on a locked phone.
+            .timeout(const Duration(seconds: 20));
         await client.authenticateWithOAuth2(address, token.accessToken!);
     }
   }
@@ -187,7 +191,11 @@ class MailAccount {
     Future<T> Function(ImapClient client, Mailbox inbox) body, {
     bool sent = false,
   }) async {
-    final client = ImapClient();
+    // Without a limit a server that stops answering left the app loading
+    // forever; long enough for 20 whole mails with attachments.
+    final client = ImapClient(
+      defaultResponseTimeout: const Duration(minutes: 2),
+    );
     try {
       await client.connectToServer(service.host, 993);
       await _login(client);
@@ -285,14 +293,14 @@ class MailAccount {
   /// [sent] mails show who they went to in place of the sender.
   Mail _toMail(MimeMessage m, {bool sent = false}) {
     final from = (sent ? m.to : m.from)?.firstOrNull;
-    final text = m.decodeTextPlainPart();
-    final html = m.decodeTextHtmlPart();
+    final text = koreanText(m, MediaSubtype.textPlain);
+    final html = koreanText(m, MediaSubtype.textHtml);
     final name = from?.personalName?.trim().isNotEmpty == true
-        ? from!.personalName!.trim()
+        ? koreanHeader(from!.personalName!.trim())
         : from?.email;
     return Mail(
       sent ? '${name ?? '받는 사람 없음'}에게' : name ?? '보낸 사람 없음',
-      m.decodeSubject()?.trim() ?? '(제목 없음)',
+      koreanHeader(m.decodeSubject()?.trim() ?? '(제목 없음)'),
       (text?.trim().isNotEmpty == true
               ? text!
               : html == null
@@ -300,7 +308,9 @@ class MailAccount {
               : htmlToText(html))
           .trim(),
       '',
-      '답장 초안은 AI를 연결한 뒤에 만들어져요.',
+      // No AI drafts yet, so a reply starts empty.
+      '',
+      address: (sent ? from : m.replyTo?.firstOrNull ?? from)?.email ?? '',
       html: html == null ? null : _inlineImages(m, html),
       source: service.label,
       date: m.decodeDate(),
@@ -364,3 +374,73 @@ String htmlToText(String html) => html
     .replaceAll(RegExp(r'[ \t]+'), ' ')
     .replaceAll(RegExp(r'\n\s*\n\s*\n+'), '\n\n')
     .trim();
+
+// enough_mail has no EUC-KR, which Korean mail (CP949, its superset, under
+// several names) still often uses: it leaves those headers encoded and
+// reads those bodies as broken UTF-8.
+const _koreanCharsets = {'euc-kr', 'ks_c_5601-1987', 'ks_c_5601', 'cp949'};
+
+final _koreanWords = RegExp(
+  r'(?:=\?(?:euc-kr|ks_c_5601-1987|ks_c_5601|cp949)\?[bq]\?[^?]*\?=\s*)+',
+  caseSensitive: false,
+);
+final _koreanWord = RegExp(r'\?([bq])\?([^?]*)\?=', caseSensitive: false);
+
+/// Decodes the EUC-KR encoded words enough_mail left in a header. A run of
+/// words is decoded as one, since mailers split a character across words.
+String koreanHeader(String header) =>
+    header.replaceAllMapped(_koreanWords, (run) {
+      final bytes = <int>[
+        for (final w in _koreanWord.allMatches(run[0]!))
+          ...w[1]!.toLowerCase() == 'b'
+              ? base64.decode(base64.normalize(w[2]!))
+              : _quotedBytes(w[2]!.replaceAll('_', ' ')),
+      ];
+      final trailing = run[0]!.endsWith(' ') ? ' ' : '';
+      return cp949.decode(bytes) + trailing;
+    });
+
+/// The text/plain or text/html body, read as EUC-KR when it is declared so.
+String? koreanText(MimeMessage m, MediaSubtype subtype) {
+  final decoded = subtype == MediaSubtype.textPlain
+      ? m.decodeTextPlainPart()
+      : m.decodeTextHtmlPart();
+  final part = _findPart(m, subtype);
+  final charset = part?.getHeaderContentType()?.charset?.toLowerCase();
+  if (part == null || !_koreanCharsets.contains(charset)) return decoded;
+  final encoding = part
+      .getHeaderValue('content-transfer-encoding')
+      ?.trim()
+      .toLowerCase();
+  final bytes = encoding == 'quoted-printable'
+      ? _quotedBytes(part.mimeData?.decodeText(null, null) ?? '')
+      : part.decodeContentBinary();
+  return bytes == null ? decoded : cp949.decode(bytes);
+}
+
+/// The part [MimePart.decodeTextPlainPart] reads: the first one, depth first.
+MimePart? _findPart(MimePart part, MediaSubtype subtype) {
+  if (part.mediaType.sub == subtype) return part;
+  for (final child in part.parts ?? const <MimePart>[]) {
+    if (_findPart(child, subtype) case final found?) return found;
+  }
+  return null;
+}
+
+/// Quoted-printable to bytes: `=XX` is a byte, `=` at a line end joins lines.
+List<int> _quotedBytes(String text) {
+  final bytes = <int>[];
+  final s = text.replaceAll(RegExp(r'=\r?\n'), '');
+  for (var i = 0; i < s.length; i++) {
+    final hex = s[i] == '=' && i + 2 < s.length
+        ? int.tryParse(s.substring(i + 1, i + 3), radix: 16)
+        : null;
+    if (hex != null) {
+      bytes.add(hex);
+      i += 2;
+    } else {
+      bytes.addAll(utf8.encode(s[i]));
+    }
+  }
+  return bytes;
+}
