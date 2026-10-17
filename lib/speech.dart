@@ -13,6 +13,7 @@ import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
 import 'mail_account.dart';
 import 'screens.dart';
+import 'tts.dart';
 
 /// Little-endian signed 16-bit PCM to normalized float samples in [-1, 1).
 Float32List pcm16ToFloat32(Uint8List bytes) {
@@ -30,20 +31,6 @@ Float32List pcm16ToFloat32(Uint8List bytes) {
 /// Not the cache directory: the OS empties that when space runs low, which
 /// made users download the same model again.
 enum SpeechModel {
-  zipformer(
-    '실시간',
-    'Zipformer 한국어',
-    '말하는 동안 바로 적어요',
-    '약 140MB',
-    '말하는 대로 바로 볼 때',
-    'https://huggingface.co/k2-fsa/sherpa-onnx-streaming-zipformer-korean-2024-06-16/resolve/main',
-    {
-      'encoder-epoch-99-avg-1.int8.onnx': 126968852,
-      'decoder-epoch-99-avg-1.onnx': 11309084,
-      'joiner-epoch-99-avg-1.int8.onnx': 2581421,
-      'tokens.txt': 60246,
-    },
-  ),
   senseVoice(
     '문장 단위',
     'SenseVoice',
@@ -115,6 +102,25 @@ enum SpeechModel {
 
   static SpeechModel? forGroup(String group) =>
       values.where((m) => m.name == group).firstOrNull;
+
+  /// Every file is on the phone at full size. Unlike the voice home's check,
+  /// this doesn't move files an older build left in the cache.
+  Future<bool> get downloaded async {
+    for (final task in tasks) {
+      final file = File(await task.filePath());
+      if (!await file.exists() || await file.length() != files[task.metaData]) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  static Future<bool> anyDownloaded() async {
+    for (final model in values) {
+      if (await model.downloaded) return true;
+    }
+    return false;
+  }
 }
 
 /// Runs an offline recogniser on its own isolate so slow models (Qwen3 takes
@@ -206,11 +212,8 @@ class SpeechScreen extends StatefulWidget {
 class _SpeechScreenState extends State<SpeechScreen>
     with SingleTickerProviderStateMixin {
   final _recorder = AudioRecorder();
-  SpeechModel _model = SpeechModel.zipformer;
-  // Streaming model (zipformer).
-  sherpa.OnlineRecognizer? _recognizer;
-  sherpa.OnlineStream? _stream;
-  // Utterance model (SenseVoice) fed by voice-activity segments.
+  SpeechModel _model = SpeechModel.senseVoice;
+  // Utterance model fed by voice-activity segments.
   _OfflineWorker? _offline;
   SpeechModel? _downloadingModel;
   final _fileProgress = <String, double>{};
@@ -229,8 +232,10 @@ class _SpeechScreenState extends State<SpeechScreen>
   /// What the user has said since the mic went on.
   String _heard = '';
   bool _opening = false;
+
+  /// Saying "읽어드릴까요?" before the mic turns on.
+  bool _asking = false;
   String _partial = '';
-  int _lastPaintMs = 0;
   String _status = '모델을 준비하고 있어요';
   bool _busy = true;
   bool _listening = false;
@@ -405,9 +410,14 @@ class _SpeechScreenState extends State<SpeechScreen>
     },
   );
 
-  bool get _loaded => _recognizer != null || _offline != null;
+  bool get _loaded => _offline != null;
 
   Future<void> _init() async {
+    // Zipformer was dropped; free the ~140 MB older builds downloaded.
+    final dropped = Directory(
+      '${(await getApplicationSupportDirectory()).path}/models/zipformer',
+    );
+    if (await dropped.exists()) await dropped.delete(recursive: true);
     await _initDownloads();
     // Start on the first model already on the phone.
     for (final model in SpeechModel.values) {
@@ -417,6 +427,7 @@ class _SpeechScreenState extends State<SpeechScreen>
       }
     }
     await _loadModel();
+    await _refreshOnPhone();
   }
 
   Future<void> _initDownloads() async {
@@ -534,12 +545,8 @@ class _SpeechScreenState extends State<SpeechScreen>
 
   // Only one model is kept in memory; each is 100 MB+.
   void _freeModels() {
-    _stream?.free();
-    _recognizer?.free();
     _vad?.free();
     _offline?.dispose();
-    _stream = null;
-    _recognizer = null;
     _vad = null;
     _offline = null;
     _vadPending.clear();
@@ -561,63 +568,43 @@ class _SpeechScreenState extends State<SpeechScreen>
         return;
       }
       final dir = await _modelDir(_model);
-      switch (_model) {
-        case SpeechModel.zipformer:
-          final model = sherpa.OnlineModelConfig(
-            transducer: sherpa.OnlineTransducerModelConfig(
-              encoder: '$dir/encoder-epoch-99-avg-1.int8.onnx',
-              decoder: '$dir/decoder-epoch-99-avg-1.onnx',
-              joiner: '$dir/joiner-epoch-99-avg-1.int8.onnx',
-            ),
-            tokens: '$dir/tokens.txt',
-            modelType: 'zipformer',
-            modelingUnit: 'cjkchar',
-            numThreads: threads,
-            debug: false,
-          );
-          _recognizer = sherpa.OnlineRecognizer(
-            sherpa.OnlineRecognizerConfig(model: model, ruleFsts: ''),
-          );
-          _stream = _recognizer!.createStream();
-        case SpeechModel.senseVoice || SpeechModel.qwen3:
-          final model = _model == SpeechModel.senseVoice
-              ? sherpa.OfflineModelConfig(
-                  senseVoice: sherpa.OfflineSenseVoiceModelConfig(
-                    model: '$dir/model.int8.onnx',
-                    language: 'ko',
-                    useInverseTextNormalization: true,
-                  ),
-                  tokens: '$dir/tokens.txt',
-                  numThreads: threads,
-                  debug: false,
-                )
-              : sherpa.OfflineModelConfig(
-                  qwen3Asr: sherpa.OfflineQwen3AsrModelConfig(
-                    convFrontend: '$dir/conv_frontend.onnx',
-                    encoder: '$dir/encoder.int8.onnx',
-                    decoder: '$dir/decoder.int8.onnx',
-                    tokenizer: '$dir/tokenizer',
-                    maxNewTokens: 256,
-                  ),
-                  tokens: '', // Qwen3 reads its vocab from tokenizer/.
-                  numThreads: threads,
-                  debug: false,
-                );
-          _offline = await _OfflineWorker.spawn(
-            sherpa.OfflineRecognizerConfig(model: model),
-          );
-          _vad = sherpa.VoiceActivityDetector(
-            config: sherpa.VadModelConfig(
-              sileroVad: sherpa.SileroVadModelConfig(
-                model: await _assetFile('vad', 'silero_vad.onnx'),
-                minSilenceDuration: 0.6,
-                maxSpeechDuration: 15,
+      final model = _model == SpeechModel.senseVoice
+          ? sherpa.OfflineModelConfig(
+              senseVoice: sherpa.OfflineSenseVoiceModelConfig(
+                model: '$dir/model.int8.onnx',
+                language: 'ko',
+                useInverseTextNormalization: true,
               ),
+              tokens: '$dir/tokens.txt',
+              numThreads: threads,
               debug: false,
-            ),
-            bufferSizeInSeconds: 30,
-          );
-      }
+            )
+          : sherpa.OfflineModelConfig(
+              qwen3Asr: sherpa.OfflineQwen3AsrModelConfig(
+                convFrontend: '$dir/conv_frontend.onnx',
+                encoder: '$dir/encoder.int8.onnx',
+                decoder: '$dir/decoder.int8.onnx',
+                tokenizer: '$dir/tokenizer',
+                maxNewTokens: 256,
+              ),
+              tokens: '', // Qwen3 reads its vocab from tokenizer/.
+              numThreads: threads,
+              debug: false,
+            );
+      _offline = await _OfflineWorker.spawn(
+        sherpa.OfflineRecognizerConfig(model: model),
+      );
+      _vad = sherpa.VoiceActivityDetector(
+        config: sherpa.VadModelConfig(
+          sileroVad: sherpa.SileroVadModelConfig(
+            model: await _assetFile('vad', 'silero_vad.onnx'),
+            minSilenceDuration: 0.6,
+            maxSpeechDuration: 15,
+          ),
+          debug: false,
+        ),
+        bufferSizeInSeconds: 30,
+      );
       if (mounted) {
         setState(() {
           _busy = false;
@@ -832,6 +819,7 @@ class _SpeechScreenState extends State<SpeechScreen>
     }
     if (!mounted) return;
     setState(() => _downloadingModel = null);
+    await _refreshOnPhone();
     // Switch straight away unless the user is mid-sentence.
     if (!_busy && !_listening) await _switchModel(model);
   }
@@ -849,7 +837,7 @@ class _SpeechScreenState extends State<SpeechScreen>
       _error = false;
       _heard = '';
       _partial = '';
-      _status = '모델을 준비하고 있어요';
+      _status = '모델을 적용 중이에요';
     });
     await _loadModel();
   }
@@ -859,17 +847,6 @@ class _SpeechScreenState extends State<SpeechScreen>
     if (_listening) {
       await _audioSub?.cancel();
       await _recorder.stop();
-      final stream = _stream;
-      final recognizer = _recognizer;
-      if (stream != null && recognizer != null) {
-        stream.inputFinished();
-        while (recognizer.isReady(stream)) {
-          recognizer.decode(stream);
-        }
-        _appendFinal(recognizer.getResult(stream).text.trim());
-        stream.free();
-        _stream = recognizer.createStream();
-      }
       final vad = _vad;
       if (vad != null) {
         vad.flush();
@@ -931,29 +908,8 @@ class _SpeechScreenState extends State<SpeechScreen>
     }
   }
 
-  // ponytail: the streaming model decodes on the UI isolate; move it into a
-  // worker like _OfflineWorker if a slow phone drops frames while listening.
   void _feed(Uint8List bytes) {
-    final samples = pcm16ToFloat32(bytes);
-    if (_vad != null) return _feedVad(samples);
-    final stream = _stream;
-    final recognizer = _recognizer;
-    if (stream == null || recognizer == null) return;
-    stream.acceptWaveform(samples: samples, sampleRate: 16000);
-    while (recognizer.isReady(stream)) {
-      recognizer.decode(stream);
-    }
-    final partial = recognizer.getResult(stream).text.trim();
-    if (recognizer.isEndpoint(stream)) {
-      _appendFinal(partial);
-      recognizer.reset(stream);
-      _paint('');
-      return;
-    }
-    final now = DateTime.now().millisecondsSinceEpoch;
-    if (now - _lastPaintMs < 150) return;
-    _lastPaintMs = now;
-    _paint(partial);
+    if (_vad != null) _feedVad(pcm16ToFloat32(bytes));
   }
 
   // Silero VAD expects fixed 512-sample windows at 16 kHz.
@@ -1019,7 +975,10 @@ class _SpeechScreenState extends State<SpeechScreen>
     if (!_listening || _opening) return;
     if (_later.hasMatch(said)) {
       _opening = true;
-      _toggleListening().whenComplete(() => _opening = false);
+      _toggleListening().whenComplete(() {
+        _opening = false;
+        Reader.instance.speak('알겠어요. 필요하면 다시 불러 주세요.');
+      });
     } else if (_yes.hasMatch(said)) {
       _openBriefing();
     }
@@ -1046,6 +1005,44 @@ class _SpeechScreenState extends State<SpeechScreen>
         onOpenAll: (only) => _openFolder(MailFolder.all, only: only),
       ),
     );
+  }
+
+  /// The mic: asks aloud whether to read the unread mail, then listens for
+  /// the answer. Tapping again stops either step.
+  Future<void> _talk() async {
+    final reader = Reader.instance;
+    if (_listening) return _toggleListening();
+    if (_asking) {
+      reader.stop();
+      return setState(() => _asking = false);
+    }
+    final count = _mails.length;
+    if (count == 0) {
+      final loading = _accounts.any(
+        (a) => _unread[a.address] == null && _mailErrors[a.address] == null,
+      );
+      await reader.speak(
+        loading
+            ? '메일을 불러오는 중이에요. 잠시 뒤에 다시 불러 주세요.'
+            : _mailError != null
+            ? '메일을 불러오지 못했어요.'
+            : '안 읽은 메일이 없어요.',
+      );
+      return;
+    }
+    setState(() => _asking = true);
+    // Listening only starts once the question ends, so the mic doesn't
+    // hear the app's own voice.
+    final problem = await reader.speak('안 읽은 메일이 $count건 있어요. 읽어드릴까요?');
+    if (!mounted || !_asking) return;
+    setState(() => _asking = false);
+    // No voice: the question is still on screen, so listen anyway.
+    if (problem != null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(problem)));
+    }
+    await _toggleListening();
   }
 
   Future<void> _openBriefing() async {
@@ -1078,7 +1075,6 @@ class _SpeechScreenState extends State<SpeechScreen>
 
   void _paint(String partial) {
     if (!mounted) return;
-    _lastPaintMs = DateTime.now().millisecondsSinceEpoch;
     setState(() => _partial = partial == '…' ? partial : _koreanOnly(partial));
     _checkCommand();
   }
@@ -1088,6 +1084,7 @@ class _SpeechScreenState extends State<SpeechScreen>
     for (final model in SpeechModel.values) {
       bd.FileDownloader().unregisterCallbacks(group: model.name);
     }
+    _changes.dispose();
     _checker?.cancel();
     _pulse.dispose();
     _audioSub?.cancel();
@@ -1122,28 +1119,88 @@ class _SpeechScreenState extends State<SpeechScreen>
     if (_scaffold.currentState?.isDrawerOpen ?? false) Navigator.pop(context);
   }
 
-  void _pickModel() {
+  /// Progress of the model being downloaded, or why it failed.
+  Widget? get _banner => switch (_downloadingModel ?? _failedDownload) {
+    final model? => _DownloadBanner(
+      label: model.label,
+      progress: _downloadFraction,
+      filesDone: _fileProgress.values.where((p) => p == 1).length,
+      filesTotal: model.files.length,
+      failed: _downloadingModel == null,
+      onCancel: _cancelDownload,
+      onRetry: () => _startDownload(model),
+      onDismiss: () => setState(() => _failedDownload = null),
+    ),
+    null => null,
+  };
+
+  /// Models fully on the phone, for 음성 설정.
+  Set<SpeechModel> _onPhone = {};
+
+  Future<void> _refreshOnPhone() async {
+    final onPhone = {
+      for (final model in SpeechModel.values)
+        if (await _isDownloaded(model)) model,
+    };
+    if (mounted) setState(() => _onPhone = onPhone);
+  }
+
+  void _openVoiceSettings() {
+    _refreshOnPhone();
     _closeDrawer();
-    if (_content.currentState != null) {
-      showDialog<void>(
-        context: context,
-        builder: (context) => Dialog(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 520),
-            child: Padding(
-              padding: const EdgeInsets.only(top: 24, bottom: 8),
-              child: _modelList(context),
-            ),
-          ),
-        ),
-      );
-      return;
-    }
-    showModalBottomSheet<void>(
+    _content.currentState?.popUntil((route) => route.isFirst);
+    _push(section: 'voice', _VoiceSettingsScreen(this));
+  }
+
+  /// Bumped on every rebuild, so 음성 설정 (its own route) follows download
+  /// progress and model changes made here.
+  final _changes = ValueNotifier(0);
+
+  @override
+  void setState(VoidCallback fn) {
+    super.setState(fn);
+    _changes.value++;
+  }
+
+  /// Deletes [model]'s files after asking; the one in use is unloaded first.
+  Future<void> _deleteModel(SpeechModel model) async {
+    final ok = await showDialog<bool>(
       context: context,
-      showDragHandle: true,
-      builder: _modelList,
+      builder: (context) => AlertDialog(
+        title: Text('${model.label} 모델을 삭제할까요?'),
+        content: Text('휴대폰 공간 ${model.size}가 비워져요. 다시 쓰려면 새로 내려받아야 해요.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('취소'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('삭제'),
+          ),
+        ],
+      ),
     );
+    if (ok != true || !mounted || _busy || _listening) return;
+    if (model == _model) _freeModels();
+    final dir = Directory(await _modelDir(model));
+    if (await dir.exists()) await dir.delete(recursive: true);
+    // Old records would start a new download's bar at 99%.
+    await bd.FileDownloader().database.deleteAllRecords(group: model.name);
+    await _refreshOnPhone();
+    if (!mounted || model != _model) return;
+    // Carry on with another model already on the phone, if any.
+    for (final other in SpeechModel.values) {
+      if (await _isDownloaded(other)) {
+        _model = other;
+        break;
+      }
+    }
+    setState(() {
+      _busy = true;
+      _status = '모델을 적용 중이에요';
+    });
+    await _loadModel();
   }
 
   Widget _mailCard(
@@ -1191,47 +1248,6 @@ class _SpeechScreenState extends State<SpeechScreen>
     ),
   );
 
-  Widget _modelList(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    final locked = _busy || _listening;
-    return SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
-            child: Text(
-              locked ? '듣는 중에는 바꿀 수 없어요' : '음성 모델',
-              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
-            ),
-          ),
-          for (final m in SpeechModel.values)
-            ListTile(
-              enabled: !locked,
-              contentPadding: const EdgeInsets.symmetric(horizontal: 24),
-              leading: Icon(
-                m == _model
-                    ? Icons.radio_button_checked
-                    : Icons.radio_button_off,
-                color: m == _model ? colors.primary : colors.outline,
-              ),
-              title: Text(
-                '${m.label} · ${m.title}',
-                style: const TextStyle(fontWeight: FontWeight.w700),
-              ),
-              subtitle: Text('${m.blurb} · ${m.size}'),
-              onTap: () {
-                Navigator.pop(context);
-                _switchModel(m);
-              },
-            ),
-          const SizedBox(height: 12),
-        ],
-      ),
-    );
-  }
-
   /// Menu body: inside the drawer on phones, the sidebar on wide windows.
   /// A folded [sidebar] shows icons only, with the label as a tooltip.
   Widget _menu(ColorScheme colors, {bool sidebar = false}) {
@@ -1241,7 +1257,6 @@ class _SpeechScreenState extends State<SpeechScreen>
       required IconData icon,
       bool selected = false,
       Color? iconColor,
-      String? sub,
       required VoidCallback onTap,
     }) {
       // A ListTile with no room for a title throws in layout, so the rail
@@ -1284,7 +1299,6 @@ class _SpeechScreenState extends State<SpeechScreen>
             label,
             style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
           ),
-          subtitle: sub == null ? null : Text(sub),
           onTap: onTap,
         ),
       );
@@ -1339,13 +1353,10 @@ class _SpeechScreenState extends State<SpeechScreen>
             Divider(height: 20, color: colors.outlineVariant),
             if (!isDesktop)
               item(
-                '음성 모델',
+                '음성 설정',
                 icon: Icons.graphic_eq_rounded,
-                sub: _downloadingModel != null
-                    ? '${_downloadingModel!.label} 내려받는 중 '
-                          '${(_downloadFraction * 100).floor()}%'
-                    : '${_model.label} · ${_model.title}',
-                onTap: _pickModel,
+                selected: _section == 'voice',
+                onTap: _openVoiceSettings,
               ),
             // A call to action until an account is linked; after that the
             // accounts live in 앱 설정.
@@ -1441,7 +1452,7 @@ class _SpeechScreenState extends State<SpeechScreen>
     final onMic = _busy || (needsModel && _downloadingModel != null)
         ? null
         : _loaded
-        ? _toggleListening
+        ? _talk
         : () => _requestDownload(_model);
     // Beside the mic: what tapping it does, and what to say.
     final (micTitle, micHint) = _error
@@ -1450,6 +1461,8 @@ class _SpeechScreenState extends State<SpeechScreen>
         ? (_status, '처음 한 번만 조금 걸려요')
         : needsModel
         ? ('${_model.label} 모델 내려받기', '${_model.size}를 한 번 내려받아요')
+        : _asking
+        ? ('읽어드릴까요?', '질문이 끝나면 말씀해 주세요')
         : _listening
         ? ('듣고 있어요', '말씀해 주세요')
         : _partial == '…'
@@ -1486,21 +1499,12 @@ class _SpeechScreenState extends State<SpeechScreen>
           const SizedBox(height: 28),
         ],
         if (!isDesktop)
-          if (_downloadingModel ?? _failedDownload case final model?) ...[
-            _DownloadBanner(
-              label: model.label,
-              progress: _downloadFraction,
-              filesDone: _fileProgress.values.where((p) => p == 1).length,
-              filesTotal: model.files.length,
-              failed: _downloadingModel == null,
-              onCancel: _cancelDownload,
-              onRetry: () => _startDownload(model),
-              onDismiss: () => setState(() => _failedDownload = null),
-            ),
+          if (_banner case final banner?) ...[
+            banner,
             const SizedBox(height: 20),
           ],
         // 01 voice home ⇄ 02 listening share this screen.
-        if (_listening) ...[
+        if (_listening || _asking) ...[
           ScreenTitle(_source, '안 읽은 메일 ${_mails.length}건'),
           const SizedBox(height: 18),
           VoiceCard(
@@ -1564,12 +1568,12 @@ class _SpeechScreenState extends State<SpeechScreen>
                 busy: _busy,
                 icon: needsModel
                     ? Icons.download_rounded
-                    : _listening
+                    : _listening || _asking
                     ? Icons.stop_rounded
                     : Icons.mic_none_rounded,
                 label: needsModel
                     ? '${_model.label} 모델 내려받기'
-                    : _listening
+                    : _listening || _asking
                     ? '듣기 멈추기'
                     : '말하기 시작',
                 onPressed: onMic,
@@ -1647,9 +1651,9 @@ class _SpeechScreenState extends State<SpeechScreen>
     );
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: SystemUiOverlayStyle.light.copyWith(
+      value: SystemUiOverlayStyle.dark.copyWith(
         systemNavigationBarColor: colors.surface,
-        systemNavigationBarIconBrightness: Brightness.light,
+        systemNavigationBarIconBrightness: Brightness.dark,
       ),
       child: CallbackShortcuts(
         bindings: {
@@ -1715,11 +1719,13 @@ class _SpeechScreenState extends State<SpeechScreen>
 class _Brand extends StatelessWidget {
   const _Brand();
 
-  // Mint lockup from design/logo (export/horizontal, mono #A8F5D0).
+  // Lockup from design/logo (export/horizontal, mono #A8F5D0), tinted to
+  // the symbol colour.
   @override
   Widget build(BuildContext context) => Image.asset(
     'assets/brand/logo-horizontal.png',
     height: 34,
+    color: Theme.of(context).colorScheme.primary,
     // The 600×160 source shrinks ~2–5×; the default low filter skips pixels
     // at that ratio and left the curves jagged. Medium samples mipmaps.
     filterQuality: FilterQuality.medium,
@@ -1727,7 +1733,7 @@ class _Brand extends StatelessWidget {
   );
 }
 
-/// Round flat mint mic. Idle: a hairline ring like the cards' borders. Listening: rings keep
+/// Round flat brown mic. Idle: a hairline ring like the cards' borders. Listening: rings keep
 /// spreading out, so "it hears me" reads at a glance; with system animations
 /// off the rings stay still and the label carries the state.
 class _MicButton extends StatelessWidget {
@@ -1748,8 +1754,8 @@ class _MicButton extends StatelessWidget {
   final VoidCallback? onPressed;
 
   static const _size = 76.0;
-  static const _mint = Color(0xffa8f5d0);
-  static const _ink = Color(0xff0d111b);
+  static const _fill = Color(0xff000000);
+  static const _glyph = Color(0xffffffff);
 
   @override
   Widget build(BuildContext context) {
@@ -1782,7 +1788,7 @@ class _MicButton extends StatelessWidget {
                   // Flat like the rest of the app: no gradient, no glow.
                   decoration: const BoxDecoration(
                     shape: BoxShape.circle,
-                    color: _mint,
+                    color: _fill,
                   ),
                   child: Material(
                     type: MaterialType.transparency,
@@ -1795,10 +1801,10 @@ class _MicButton extends StatelessWidget {
                               padding: EdgeInsets.all(24),
                               child: CircularProgressIndicator(
                                 strokeWidth: 3,
-                                color: _ink,
+                                color: _glyph,
                               ),
                             )
-                          : Icon(icon, size: 36, color: _ink),
+                          : Icon(icon, size: 36, color: _glyph),
                     ),
                   ),
                 ),
@@ -1833,7 +1839,7 @@ class _RingsPainter extends CustomPainter {
       inner + 12,
       paint
         ..strokeWidth = 1.5
-        ..color = const Color(0xff252e3d),
+        ..color = const Color(0xffd6d6d6),
     );
     if (!listening) return;
     // Two rings, half a cycle apart, growing from the button edge outward.
@@ -1844,7 +1850,7 @@ class _RingsPainter extends CustomPainter {
         inner + 12 + (outer - inner - 12) * p,
         paint
           ..strokeWidth = 2
-          ..color = const Color(0xffa8f5d0).withValues(alpha: 0.6 * (1 - p)),
+          ..color = const Color(0xff000000).withValues(alpha: 0.45 * (1 - p)),
       );
     }
   }
@@ -1855,6 +1861,134 @@ class _RingsPainter extends CustomPainter {
 }
 
 /// Shows the background model download without blocking the current model.
+/// 음성 설정: pick, download or delete a speech model. Reads and drives the
+/// home's state, which owns the recogniser and the downloads.
+class _VoiceSettingsScreen extends StatelessWidget {
+  const _VoiceSettingsScreen(this.home);
+  final _SpeechScreenState home;
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: home._changes,
+    builder: (context, _) {
+      final colors = Theme.of(context).colorScheme;
+      final locked = home._busy || home._listening;
+      return AppPage(
+        trail: [homeLabel, '음성 설정'],
+        children: [
+          const ScreenTitle('음성 설정', '어떤 모델로 알아들을까요?'),
+          const SizedBox(height: 8),
+          Text(
+            locked
+                ? '듣는 중이거나 모델을 적용 중일 때는 바꿀 수 없어요'
+                : '받은 모델은 인터넷 없이 이 휴대폰 안에서만 인식해요',
+            style: TextStyle(fontSize: 14, color: colors.onSurfaceVariant),
+          ),
+          const SizedBox(height: 20),
+          if (home._banner case final banner?) ...[
+            banner,
+            const SizedBox(height: 16),
+          ],
+          for (final m in SpeechModel.values) ...[
+            _modelCard(m, colors, locked),
+            const SizedBox(height: 12),
+          ],
+        ],
+      );
+    },
+  );
+
+  Widget _modelCard(SpeechModel m, ColorScheme colors, bool locked) {
+    final onPhone = home._onPhone.contains(m);
+    final inUse = m == home._model && home._loaded;
+    final downloading = home._downloadingModel == m;
+    final applying = home._busy && m == home._model;
+    return VoiceCard(
+      borderColor: inUse ? colors.primary : null,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '${m.label} · ${m.title}',
+                  style: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              if (inUse)
+                Text(
+                  '사용 중',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: colors.primary,
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '${m.blurb} · ${m.recommend} · ${m.size}',
+            style: TextStyle(fontSize: 14, color: colors.onSurfaceVariant),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              if (applying)
+                Row(
+                  children: [
+                    const SizedBox.square(
+                      dimension: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    const SizedBox(width: 10),
+                    Text(
+                      '적용 중…',
+                      style: TextStyle(color: colors.onSurfaceVariant),
+                    ),
+                  ],
+                )
+              else if (downloading)
+                Text(
+                  '내려받는 중 ${(home._downloadFraction * 100).floor()}%',
+                  style: TextStyle(color: colors.onSurfaceVariant),
+                )
+              else if (!onPhone)
+                OutlinedButton.icon(
+                  onPressed: locked || home._downloadingModel != null
+                      ? null
+                      : () => home._switchModel(m),
+                  icon: const Icon(Icons.download_rounded),
+                  label: const Text('내려받기'),
+                )
+              else if (!inUse)
+                FilledButton(
+                  onPressed: locked ? null : () => home._switchModel(m),
+                  // The theme's full-width minimum has no width to fill in
+                  // a Row, which threw in layout and left the screen blank.
+                  style: FilledButton.styleFrom(minimumSize: const Size(0, 44)),
+                  child: const Text('이 모델 쓰기'),
+                ),
+              const Spacer(),
+              if (onPhone)
+                TextButton.icon(
+                  onPressed: locked ? null : () => home._deleteModel(m),
+                  icon: const Icon(Icons.delete_outline_rounded),
+                  label: const Text('삭제'),
+                  style: TextButton.styleFrom(foregroundColor: colors.error),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _DownloadBanner extends StatelessWidget {
   const _DownloadBanner({
     required this.label,

@@ -11,12 +11,13 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import 'mail_account.dart';
+import 'speech.dart';
 import 'summary.dart';
 import 'tts.dart';
 
 /// Amber for offline / waiting states (design 06).
 const amber = Color(0xfff2a93b);
-const amberCard = Color(0xff2a2218);
+const amberCard = Color(0xfffff1dc);
 
 class Mail {
   const Mail(
@@ -167,66 +168,27 @@ class ScreenTitle extends StatelessWidget {
   }
 }
 
-/// The two big buttons at the bottom: outlined left, mint right.
-class ButtonPair extends StatelessWidget {
-  const ButtonPair({
+/// Frame of every screen but home: menu path, swipe back, floating button.
+class AppPage extends StatefulWidget {
+  const AppPage({
     super.key,
-    required this.left,
-    required this.right,
-    required this.onLeft,
-    required this.onRight,
+    required this.trail,
+    required this.children,
+    this.floating,
   });
-
-  final String left;
-  final String right;
-  final VoidCallback onLeft;
-  final VoidCallback onRight;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return Row(
-      children: [
-        Expanded(
-          child: OutlinedButton(
-            onPressed: onLeft,
-            style: OutlinedButton.styleFrom(
-              minimumSize: const Size.fromHeight(56),
-              foregroundColor: colors.onSurface,
-              backgroundColor: colors.surfaceContainer,
-              side: BorderSide(color: colors.outlineVariant),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-              textStyle: const TextStyle(
-                fontSize: 17,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            child: Text(left),
-          ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: FilledButton(onPressed: onRight, child: Text(right)),
-        ),
-      ],
-    );
-  }
-}
-
-class _Page extends StatefulWidget {
-  const _Page({required this.trail, required this.children});
 
   /// Menu path from home to this screen, shown top left.
   final List<String> trail;
   final List<Widget> children;
 
+  /// Floats bottom centre over the content, e.g. the mail's reply pill.
+  final Widget? floating;
+
   @override
-  State<_Page> createState() => _PageState();
+  State<AppPage> createState() => _AppPageState();
 }
 
-class _PageState extends State<_Page> {
+class _AppPageState extends State<AppPage> {
   /// Set once a trackpad swipe has gone back, so one swipe pops one page.
   bool _swiped = false;
 
@@ -247,25 +209,43 @@ class _PageState extends State<_Page> {
     }
   }
 
+  /// A quick swipe right goes back. iOS already pops on an edge swipe, with
+  /// the page following the finger, so it keeps that instead.
+  void _onSwipe(DragEndDetails d) {
+    if ((d.primaryVelocity ?? 0) > 300) Navigator.maybePop(context);
+  }
+
   @override
   Widget build(BuildContext context) => Listener(
     onPointerDown: _onPointer,
     onPointerPanZoomStart: _onPointer,
     onPointerPanZoomUpdate: _onPointer,
-    child: Scaffold(
-      appBar: AppBar(titleSpacing: 0, title: _Trail(widget.trail)),
-      body: SafeArea(
-        top: false,
-        // Desktop windows: keep the column readable instead of edge to edge.
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 760),
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
-              children: widget.children,
+    child: GestureDetector(
+      onHorizontalDragEnd: Platform.isIOS ? null : _onSwipe,
+      child: Scaffold(
+        appBar: AppBar(titleSpacing: 0, title: _Trail(widget.trail)),
+        body: SafeArea(
+          top: false,
+          // Desktop windows: keep the column readable instead of edge to edge.
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 760),
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+                children: widget.children,
+              ),
             ),
           ),
         ),
+        // Lifted off the bottom edge so a thumb reaches it without stretching.
+        floatingActionButton: switch (widget.floating) {
+          final pill? => Padding(
+            padding: const EdgeInsets.only(bottom: 24),
+            child: pill,
+          ),
+          null => null,
+        },
+        floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
       ),
     ),
   );
@@ -390,13 +370,30 @@ class _MailFolderScreenState extends State<MailFolderScreen> {
   final _more = <String>{};
   bool _loadingMore = false;
 
+  /// A speech model is on the phone, so the write pill offers the mic.
+  bool _voice = false;
+
   @override
   void initState() {
     super.initState();
+    SpeechModel.anyDownloaded().then((v) {
+      if (v && mounted) setState(() => _voice = true);
+    });
     for (final account in widget.accounts) {
       _fetch(account);
     }
   }
+
+  void _write() => Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (_) => ComposeScreen(
+        from: [...widget.from, widget.folder.label],
+        accounts: widget.accounts,
+        account: widget.accounts.where((a) => a.address == _only).firstOrNull,
+      ),
+    ),
+  );
 
   /// Fetches the newest page, or with [before] the page older than that UID
   /// added to the end.
@@ -535,6 +532,12 @@ class _MailFolderScreenState extends State<MailFolderScreen> {
     widget.onRead?.call(mail);
   }
 
+  /// The service name ("Gmail"), or the address when two accounts share it.
+  String _name(MailAccount a) =>
+      widget.accounts.where((b) => b.service == a.service).length > 1
+      ? a.address
+      : a.service.label;
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
@@ -542,13 +545,21 @@ class _MailFolderScreenState extends State<MailFolderScreen> {
     final accounts = widget.accounts;
     final mails = _list;
     final unread = widget.folder == MailFolder.unread;
-    return _Page(
+    return AppPage(
       trail: [...widget.from, widget.folder.label],
+      floating: _WritePill(
+        '메일 작성',
+        onWrite: _write,
+        onVoice: _voice ? _write : null,
+      ),
       children: [
         ScreenTitle(switch (accounts) {
           [] => '예시 메일',
-          [final single] => single.address,
-          _ => _only ?? '메일 ${accounts.length}개 계정',
+          [final single] => single.service.label,
+          _ when _only != null => _name(
+            accounts.firstWhere((a) => a.address == _only),
+          ),
+          _ => '메일 ${accounts.length}개 계정',
         }, unread ? '안 읽은 메일 $_left건' : widget.folder.label),
         const SizedBox(height: 14),
         Row(
@@ -559,14 +570,27 @@ class _MailFolderScreenState extends State<MailFolderScreen> {
                 runSpacing: 8,
                 children: [
                   if (accounts.length > 1)
-                    for (final address in [
-                      null,
-                      ...accounts.map((a) => a.address),
-                    ])
+                    for (final a in [null, ...accounts])
                       ChoiceChip(
-                        label: Text(address ?? '전체 계정'),
-                        selected: _only == address,
-                        onSelected: (_) => setState(() => _only = address),
+                        // The service's badge says which account; a tick
+                        // would only repeat the chip's selected fill.
+                        showCheckmark: false,
+                        avatar: a == null
+                            ? null
+                            : CircleAvatar(
+                                backgroundColor: a.service.color,
+                                child: Text(
+                                  a.service.mark,
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w900,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ),
+                        label: Text(a == null ? '전체 계정' : _name(a)),
+                        selected: _only == a?.address,
+                        onSelected: (_) => setState(() => _only = a?.address),
                       ),
                 ],
               ),
@@ -642,6 +666,8 @@ class _MailFolderScreenState extends State<MailFolderScreen> {
             label: const Text('전체 메일함 가기'),
           ),
         ],
+        // Room so the last mail can scroll out from under the write pill.
+        const SizedBox(height: 104),
       ],
     );
   }
@@ -669,10 +695,20 @@ class MailTile extends StatelessWidget {
     if (date == null) return '';
     final d = date.toLocal();
     final now = DateTime.now();
-    String two(int n) => '$n'.padLeft(2, '0');
-    return d.year == now.year && d.month == now.month && d.day == now.day
-        ? '${two(d.hour)}:${two(d.minute)}'
-        : '${d.month}/${d.day}';
+    final ago = now.difference(d);
+    final days = DateTime(
+      now.year,
+      now.month,
+      now.day,
+    ).difference(DateTime(d.year, d.month, d.day)).inDays;
+    if (ago.inMinutes < 1) return '방금';
+    if (ago.inHours < 1) return '${ago.inMinutes}분 전';
+    if (days == 0) return '${ago.inHours}시간 전';
+    if (days == 1) return '어제';
+    if (days < 7) return '$days일 전';
+    return d.year == now.year
+        ? '${d.month}/${d.day}'
+        : '${d.year}/${d.month}/${d.day}';
   }
 
   @override
@@ -758,15 +794,24 @@ class BriefingScreen extends StatefulWidget {
 class _BriefingScreenState extends State<BriefingScreen>
     with SingleTickerProviderStateMixin {
   late int _index = widget.index;
+
+  /// Goes on to the next mail when one finishes; off once the user stops.
+  late bool _auto = widget.autoRead;
   late final _wave = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 1200),
   );
   final _reader = Reader.instance;
 
+  /// A speech model is on the phone, so the reply pill offers the mic.
+  bool _voice = false;
+
   @override
   void initState() {
     super.initState();
+    SpeechModel.anyDownloaded().then((v) {
+      if (v && mounted) setState(() => _voice = true);
+    });
     _reader.speaking.addListener(_syncWave);
     markRead(widget.mails[_index], widget.onRead);
     if (widget.autoRead) _read();
@@ -787,7 +832,7 @@ class _BriefingScreenState extends State<BriefingScreen>
 
   /// Reads who and what, then the AI summary once it's written (the whole
   /// body if the summary model isn't downloaded or the summary fails).
-  Future<void> _read() async {
+  Future<void> _read({bool next = false}) async {
     final mail = widget.mails[_index];
     final summarizer = Summarizer.instance;
     final rest = await summarizer.installed
@@ -804,40 +849,71 @@ class _BriefingScreenState extends State<BriefingScreen>
         : Future.value(spokenBody(mail.body));
     if (!mounted || widget.mails[_index] != mail) return;
     final problem = await _reader.speak(
-      '${mail.from}.\n${mail.subject}.',
+      '${next ? '다음 메일입니다.\n' : ''}${mail.from}.\n${mail.subject}.',
       then: rest,
     );
-    if (problem != null && mounted) {
+    if (!mounted) return;
+    if (problem != null) {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(problem)));
+    } else if (_auto && widget.mails[_index] == mail) {
+      _readNext();
     }
   }
 
-  void _next() {
+  /// Hands-free reading: on to the next mail, or says it's done.
+  void _readNext() {
     if (_index == widget.mails.length - 1) {
-      _reader.stop();
-      Navigator.pop(context);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('안 읽은 메일을 모두 들었어요')));
+      _auto = false;
+      _reader.speak('안 읽은 메일을 다 읽었어요.');
       return;
     }
     setState(() => _index++);
     markRead(widget.mails[_index], widget.onRead);
-    if (widget.autoRead || _reader.speaking.value) {
-      _read();
-    } else {
+    _read(next: true);
+  }
+
+  void _toggleReading() {
+    if (_reader.speaking.value) {
+      _auto = false;
       _reader.stop();
+      return;
     }
+    _auto = widget.autoRead;
+    _read();
+  }
+
+  /// A screen is open on top, so the mail's WebView is put away.
+  bool _covered = false;
+
+  Future<void> _reply() async {
+    _auto = false;
+    _reader.stop();
+    setState(() => _covered = true);
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ComposeScreen(
+          mail: widget.mails[_index],
+          from: [...widget.from, '메일 내용'],
+        ),
+      ),
+    );
+    if (mounted) setState(() => _covered = false);
   }
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final mail = widget.mails[_index];
-    return _Page(
-      trail: [...widget.from, '메일 읽기'],
+    return AppPage(
+      trail: [...widget.from, '메일 내용'],
+      floating: _WritePill(
+        '답장',
+        onWrite: _reply,
+        onVoice: _voice ? _reply : null,
+      ),
       children: [
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -870,12 +946,12 @@ class _BriefingScreenState extends State<BriefingScreen>
         _SummaryCard(mail),
         const SizedBox(height: 16),
         if (mail.html case final html?)
-          _MailHtml(html)
+          _MailHtml(html, hidden: _covered)
         else
           Text(mail.body, style: const TextStyle(fontSize: 18, height: 1.7)),
         const SizedBox(height: 24),
         VoiceCard(
-          onTap: () => _reader.speaking.value ? _reader.stop() : _read(),
+          onTap: _toggleReading,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -908,28 +984,105 @@ class _BriefingScreenState extends State<BriefingScreen>
           ),
         ),
         const SizedBox(height: 14),
-        ButtonPair(
-          left: '다음 메일',
-          right: '답장하기',
-          onLeft: _next,
-          onRight: () {
-            _reader.stop();
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) =>
-                    ReplyScreen(mail: mail, from: [...widget.from, '메일 읽기']),
-              ),
-            );
-          },
-        ),
-        const SizedBox(height: 14),
         Text(
           '"답장해줘" 또는 "다음 메일"',
           textAlign: TextAlign.center,
           style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
         ),
+        // Room so the last line can scroll out from under the reply pill.
+        const SizedBox(height: 104),
       ],
+    );
+  }
+}
+
+/// Black pill floating over a screen: write a mail or reply, or say one.
+class _WritePill extends StatelessWidget {
+  const _WritePill(
+    this.label, {
+    required this.onWrite,
+    this.icon = Icons.edit_square,
+    this.onVoice,
+    this.voiceIcon = Icons.mic_none_rounded,
+    this.voiceLabel,
+  });
+  final String label;
+  final IconData icon;
+  final VoidCallback onWrite;
+
+  /// Null hides the right-hand part (the mic, unless [voiceIcon] says else).
+  final VoidCallback? onVoice;
+  final IconData voiceIcon;
+
+  /// Shown beside [voiceIcon]; without it the icon stands alone.
+  final String? voiceLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Material(
+      color: colors.primary,
+      shape: const StadiumBorder(),
+      elevation: 6,
+      clipBehavior: Clip.antiAlias,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          InkWell(
+            onTap: onWrite,
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(
+                22,
+                10,
+                onVoice == null ? 22 : 16,
+                10,
+              ),
+              child: Row(
+                children: [
+                  Icon(icon, color: colors.onPrimary),
+                  const SizedBox(width: 10),
+                  Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                      color: colors.onPrimary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (onVoice != null) ...[
+            Container(width: 1, height: 22, color: Colors.white24),
+            InkWell(
+              onTap: onVoice,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 10, 20, 10),
+                child: Semantics(
+                  label: voiceLabel ?? '말로 $label',
+                  child: Row(
+                    children: [
+                      Icon(voiceIcon, color: const Color(0xffc5c0ff)),
+                      if (voiceLabel case final text?) ...[
+                        const SizedBox(width: 6),
+                        Text(
+                          text,
+                          style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
+                            color: Color(0xffc5c0ff),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }
@@ -1080,8 +1233,12 @@ class _SummaryCardState extends State<_SummaryCard> {
 /// tall as the mail so the page scrolls as one. The mail's own scripts are
 /// blocked and links open in the browser, never inside the app.
 class _MailHtml extends StatefulWidget {
-  const _MailHtml(this.html);
+  const _MailHtml(this.html, {this.hidden = false});
   final String html;
+
+  /// Detaches the WebView but keeps its page and height: on Android it went
+  /// on redrawing (~24 times a second) under a screen pushed on top.
+  final bool hidden;
 
   @override
   State<_MailHtml> createState() => _MailHtmlState();
@@ -1153,7 +1310,7 @@ class _MailHtmlState extends State<_MailHtml> {
     borderRadius: BorderRadius.circular(14),
     child: SizedBox(
       height: _height,
-      child: WebViewWidget(controller: _web),
+      child: widget.hidden ? null : WebViewWidget(controller: _web),
     ),
   );
 }
@@ -1192,18 +1349,45 @@ class _WavePainter extends CustomPainter {
   bool shouldRepaint(_WavePainter old) => old.t != t;
 }
 
-/// 04 — reads back a reply draft; nothing is sent without a clear yes.
-class ReplyScreen extends StatefulWidget {
-  const ReplyScreen({super.key, required this.mail, required this.from});
-  final Mail mail;
+/// 04 — writes a new mail, or with [mail] a reply to it; nothing is sent
+/// without a clear yes.
+class ComposeScreen extends StatefulWidget {
+  const ComposeScreen({
+    super.key,
+    required this.from,
+    this.mail,
+    this.accounts = const [],
+    this.account,
+  });
   final List<String> from;
 
+  /// The mail being answered; null for a new mail.
+  final Mail? mail;
+
+  /// Accounts a new mail can go from, starting at [account].
+  final List<MailAccount> accounts;
+  final MailAccount? account;
+
   @override
-  State<ReplyScreen> createState() => _ReplyScreenState();
+  State<ComposeScreen> createState() => _ComposeScreenState();
 }
 
-class _ReplyScreenState extends State<ReplyScreen> {
+class _ComposeScreenState extends State<ComposeScreen> {
   final _reader = Reader.instance;
+  late final _to = TextEditingController(text: widget.mail?.from);
+  late final _subject = TextEditingController(
+    text: switch (widget.mail?.subject) {
+      null => '',
+      final s when s.toLowerCase().startsWith('re:') => s,
+      final s => 'Re: $s',
+    },
+  );
+  late final _body = TextEditingController(text: widget.mail?.draft);
+
+  /// Played once, so the button can say 다시 듣기.
+  bool _listened = false;
+  late MailAccount? _sender =
+      widget.mail?.account ?? widget.account ?? widget.accounts.firstOrNull;
 
   @override
   void initState() {
@@ -1215,6 +1399,9 @@ class _ReplyScreenState extends State<ReplyScreen> {
   void dispose() {
     _reader.speaking.removeListener(_redraw);
     _reader.stop();
+    _to.dispose();
+    _subject.dispose();
+    _body.dispose();
     super.dispose();
   }
 
@@ -1222,7 +1409,8 @@ class _ReplyScreenState extends State<ReplyScreen> {
 
   Future<void> _toggle() async {
     if (_reader.speaking.value) return _reader.stop();
-    final problem = await _reader.speak(widget.mail.draft);
+    setState(() => _listened = true);
+    final problem = await _reader.speak(_body.text);
     if (problem != null && mounted) {
       ScaffoldMessenger.of(
         context,
@@ -1230,66 +1418,105 @@ class _ReplyScreenState extends State<ReplyScreen> {
     }
   }
 
+  // shortcut: no SMTP yet, so sending only says so; send through the
+  // sender's account once sending exists.
+  void _send() {
+    Navigator.popUntil(context, (route) => route.isFirst);
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('보냈어요 (목업이라 실제로 발송되지 않아요)')));
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return _Page(
-      trail: [...widget.from, '답장'],
+    final reply = widget.mail != null;
+    const text = TextStyle(fontSize: 16);
+    const bare = InputDecoration.collapsed(hintText: '');
+    return AppPage(
+      trail: [...widget.from, reply ? '답장' : '메일 작성'],
+      floating: _WritePill(
+        '보내기',
+        icon: Icons.send_rounded,
+        onWrite: _send,
+        onVoice: _toggle,
+        voiceIcon: _reader.speaking.value
+            ? Icons.pause_rounded
+            : Icons.play_arrow_rounded,
+        voiceLabel: _reader.speaking.value
+            ? '멈추기'
+            : _listened
+            ? '다시 듣기'
+            : reply
+            ? '초안 듣기'
+            : '듣기',
+      ),
       children: [
-        ScreenTitle('${widget.mail.from}에게', '답장 초안'),
-        const SizedBox(height: 20),
-        VoiceCard(
-          padding: const EdgeInsets.all(18),
-          child: Text(
-            widget.mail.draft,
-            style: const TextStyle(fontSize: 18, height: 1.7),
+        // One line per header, like a mail app's compose screen.
+        for (final (label, field) in [
+          (
+            '보내는 사람',
+            !reply && widget.accounts.length > 1
+                ? DropdownButton<MailAccount>(
+                    value: _sender,
+                    isDense: true,
+                    isExpanded: true,
+                    underline: const SizedBox(),
+                    style: text.copyWith(color: colors.onSurface),
+                    items: [
+                      for (final a in widget.accounts)
+                        DropdownMenuItem(value: a, child: Text(a.address)),
+                    ],
+                    onChanged: (a) => setState(() => _sender = a),
+                  )
+                : Text(_sender?.address ?? '예시 계정', style: text),
           ),
-        ),
-        const SizedBox(height: 14),
-        VoiceCard(
-          onTap: _toggle,
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-          child: Row(
-            children: [
-              Icon(
-                _reader.speaking.value
-                    ? Icons.pause_rounded
-                    : Icons.play_arrow_rounded,
-                color: colors.primary,
-              ),
-              const SizedBox(width: 10),
-              const Expanded(
-                child: Text(
-                  '초안 다시 듣기',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          (
+            '받는 사람',
+            TextField(
+              controller: _to,
+              style: text,
+              keyboardType: TextInputType.emailAddress,
+              decoration: bare.copyWith(hintText: '메일 주소'),
+            ),
+          ),
+          (
+            '제목',
+            TextField(controller: _subject, style: text, decoration: bare),
+          ),
+        ]) ...[
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 84,
+                  child: Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 15,
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
                 ),
-              ),
-            ],
+                Expanded(child: field),
+              ],
+            ),
           ),
-        ),
-        const SizedBox(height: 24),
-        const Text(
-          '이대로 보낼까요?',
-          style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
-        ),
-        const SizedBox(height: 14),
-        ButtonPair(
-          left: '다시 말하기',
-          right: '확인 후 보내기',
-          onLeft: () => Navigator.pop(context),
-          onRight: () {
-            Navigator.popUntil(context, (route) => route.isFirst);
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('보냈어요 (목업이라 실제로 발송되지 않아요)')),
-            );
-          },
-        ),
+          Divider(height: 1, color: colors.outlineVariant),
+        ],
         const SizedBox(height: 12),
-        Text(
-          '사용자가 말해야 발송됩니다',
-          textAlign: TextAlign.center,
-          style: TextStyle(fontSize: 13, color: colors.primary),
+        TextField(
+          controller: _body,
+          minLines: 8,
+          maxLines: null,
+          keyboardType: TextInputType.multiline,
+          style: const TextStyle(fontSize: 17, height: 1.6),
+          decoration: bare.copyWith(hintText: '내용을 입력하세요'),
         ),
+        Divider(height: 1, color: colors.outlineVariant),
+        // Room so the last line can scroll out from under the send pill.
+        const SizedBox(height: 104),
       ],
     );
   }
@@ -1303,7 +1530,7 @@ class OfflineScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return _Page(
+    return AppPage(
       trail: [...from, '오프라인 화면'],
       children: [
         VoiceCard(
@@ -1366,8 +1593,8 @@ class OfflineScreen extends StatelessWidget {
         ),
         const SizedBox(height: 14),
         VoiceCard(
-          color: const Color(0xff2a1d18),
-          borderColor: const Color(0xff4a3127),
+          color: const Color(0xffffe9e3),
+          borderColor: const Color(0xfff5c2b3),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1376,7 +1603,7 @@ class OfflineScreen extends StatelessWidget {
                 style: TextStyle(
                   fontSize: 17,
                   fontWeight: FontWeight.w700,
-                  color: Color(0xffff9e7a),
+                  color: Color(0xffc2410c),
                 ),
               ),
               const SizedBox(height: 8),
@@ -1498,23 +1725,19 @@ class MailProviderScreen extends StatelessWidget {
         ),
       ),
     );
-    return _Page(
+    return AppPage(
       trail: [...from, '메일 연동하기'],
       children: [
         const ScreenTitle('메일 연동하기', '어떤 메일을 연결할까요?'),
         const SizedBox(height: 20),
-        for (final (service, color, sub) in [
-          (
-            MailService.naver,
-            const Color(0xff03c75a),
-            '아이디와 애플리케이션 비밀번호로 연결해요',
-          ),
-          (MailService.gmail, const Color(0xffea4335), '구글 계정으로 로그인해서 연결해요'),
+        for (final (service, sub) in [
+          (MailService.naver, '아이디와 애플리케이션 비밀번호로 연결해요'),
+          (MailService.gmail, '구글 계정으로 로그인해서 연결해요'),
         ])
           provider(
             service.label,
             service.mark,
-            color,
+            service.color,
             switch ([
               for (final a in accounts)
                 if (a.service == service) a.address,
@@ -1651,7 +1874,7 @@ class _MailConnectScreenState extends State<MailConnectScreen> {
         if (a.service == service) a,
     ];
     final naver = service == MailService.naver;
-    return _Page(
+    return AppPage(
       trail: [...widget.from, service.label],
       children: [
         ScreenTitle('메일 연동하기', service.label),
@@ -2100,7 +2323,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       onSelectionChanged: (picked) => onPick(picked.single),
     );
     final soon = _StatusChip('곧 지원', colors.onSurfaceVariant);
-    return _Page(
+    return AppPage(
       trail: trail,
       children: [
         const ScreenTitle('앱 설정', '내 메일 공간 설정'),

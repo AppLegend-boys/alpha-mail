@@ -1,6 +1,6 @@
 # Alpha Mail
 
-Android·iOS용 완전 로컬 한국어 음성인식 MVP입니다. 마이크 음성은 sherpa-onnx 엔진과 한국어 Zipformer 모델로 기기 안에서 처리합니다. 앱에는 네트워크 권한을 추가하지 않았고, 음성 서버나 API 키를 사용하지 않습니다.
+Android·iOS용 완전 로컬 한국어 음성인식 MVP입니다. 마이크 음성은 sherpa-onnx 엔진과 SenseVoice 또는 Qwen3-ASR 모델로 기기 안에서 처리합니다. 앱에는 네트워크 권한을 추가하지 않았고, 음성 서버나 API 키를 사용하지 않습니다.
 
 ## 실행
 
@@ -16,9 +16,9 @@ flutter run
 ## 모델
 
 - sherpa-onnx `1.13.8`
-- 한국어 streaming Zipformer, INT8 encoder/joiner
+- SenseVoice(문장 단위, 약 240MB), Qwen3-ASR 0.6B(고정확도, 약 980MB), 둘 다 INT8
 - 모델은 앱 번들에 넣지 않고, 앱에서 처음 선택할 때 HuggingFace에서 내려받습니다. 받은 뒤에는 오프라인으로 동작합니다.
-- 원본 모델 안내: https://k2-fsa.github.io/sherpa/onnx/pretrained_models/online-transducer/zipformer-transducer-models.html
+- 앱의 '음성 설정'에서 모델을 고르고, 받고, 삭제합니다.
 
 앱 번들에는 VAD 모델(`assets/models/vad/silero_vad.onnx`)만 포함됩니다. 음성인식 모델 목록과 다운로드 주소는 `lib/main.dart`의 `SpeechModel`에 있습니다.
 

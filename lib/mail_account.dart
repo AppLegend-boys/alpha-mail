@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' show Color;
 
 import 'package:enough_mail/enough_mail.dart';
 import 'package:flutter_appauth/flutter_appauth.dart';
@@ -11,16 +12,19 @@ import 'screens.dart';
 /// Mail services the app can read over IMAP. Naver takes an app password,
 /// which needs two-step login turned on; Gmail takes Google sign-in.
 enum MailService {
-  naver('네이버 메일', 'N', 'imap.naver.com'),
+  naver('네이버 메일', 'N', Color(0xff03c75a), 'imap.naver.com'),
   // Gmail keeps IMAP always on since 2025, so there is no setting to flip.
-  gmail('Gmail', 'G', 'imap.gmail.com');
+  gmail('Gmail', 'G', Color(0xffea4335), 'imap.gmail.com');
 
-  const MailService(this.label, this.mark, this.host);
+  const MailService(this.label, this.mark, this.color, this.host);
 
   final String label;
 
   /// One-letter badge shown beside the service name.
   final String mark;
+
+  /// Brand colour behind [mark].
+  final Color color;
   final String host;
 }
 
