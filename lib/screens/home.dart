@@ -27,15 +27,10 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen>
-    with SingleTickerProviderStateMixin {
+class _HomeScreenState extends State<HomeScreen> {
   final _speech = Recognizer();
   late final _downloads = ModelDownloads(onDone: _speech.switchWhenFree);
   final _inbox = MailInbox();
-  late final _pulse = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1600),
-  );
   final _scaffold = GlobalKey<ScaffoldState>();
   final _content = GlobalKey<NavigatorState>();
   AppSettings _settings = const AppSettings();
@@ -113,7 +108,6 @@ class _HomeScreenState extends State<HomeScreen>
     _speech.dispose();
     _downloads.dispose();
     _inbox.dispose();
-    _pulse.dispose();
     super.dispose();
   }
 
@@ -311,60 +305,105 @@ class _HomeScreenState extends State<HomeScreen>
     onOffline: _openOffline,
   );
 
-  Widget _mailCard(
-    ColorScheme colors,
-    String mark,
-    String title,
-    String subtitle,
-    VoidCallback onTap,
-  ) => VoiceCard(
-    onTap: onTap,
-    child: Row(
+  /// Unread mail across accounts: the server's count, or the example mails'.
+  int get _unreadCount => _inbox.accounts.isEmpty
+      ? mockMails.length
+      : _inbox.accounts.fold(
+          0,
+          (n, a) => n + (_inbox.unreadTotal[a.address] ?? 0),
+        );
+
+  /// 안 읽은 메일 N건, each account's count or state beside it, and any
+  /// load error under it.
+  List<Widget> _unreadHeader(ColorScheme colors) => [
+    Row(
+      crossAxisAlignment: CrossAxisAlignment.baseline,
+      textBaseline: TextBaseline.alphabetic,
       children: [
-        CircleAvatar(
-          radius: 14,
-          backgroundColor: colors.primaryContainer,
+        Text(
+          '안 읽은 메일 $_unreadCount건',
+          style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w800),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
           child: Text(
-            mark,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w800,
-              color: colors.primary,
+            _inbox.accounts.isEmpty
+                ? '예시 메일'
+                : [
+                    for (final a in _inbox.accounts)
+                      '${a.service.label.replaceAll(' 메일', '')} ${switch (_inbox.unread[a.address]) {
+                        null when _inbox.errors[a.address] == null => '…',
+                        null => '실패',
+                        _ => '${_inbox.unreadTotal[a.address]}',
+                      }}',
+                  ].join(' · '),
+            textAlign: TextAlign.end,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
+          ),
+        ),
+      ],
+    ),
+    if (_inbox.error case final error?) ...[
+      const SizedBox(height: 8),
+      Text(
+        '$error\n아래로 당기면 다시 불러와요',
+        style: TextStyle(fontSize: 13, color: colors.error),
+      ),
+    ],
+  ];
+
+  /// The newest few unread mails, so home shows what came in, not only how
+  /// many. The rest are a tap away in 안 읽은 메일.
+  List<Widget> _unreadPreview(ColorScheme colors) {
+    const shown = 3;
+    final mails = _inbox.mails;
+    final more = _unreadCount - shown;
+    return [
+      if (mails.isEmpty)
+        VoiceCard(
+          onTap: () => _openFolder(MailFolder.all),
+          child: Text(
+            _inbox.loading ? '메일을 불러오는 중…' : '안 읽은 메일이 없어요 · 전체 메일 보기',
+            style: TextStyle(color: colors.onSurfaceVariant),
+          ),
+        ),
+      for (final (i, mail) in mails.take(shown).indexed) ...[
+        if (i > 0) const SizedBox(height: 10),
+        MailTile(
+          mail,
+          read: false,
+          showSource: _inbox.accounts.length > 1,
+          onTap: () => _push(
+            BriefingScreen(
+              from: [homeLabel],
+              mails: mails,
+              index: i,
+              onRead: _inbox.markRead,
+              autoRead: false,
+              speech: _speech,
             ),
           ),
         ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
-              ),
-              Text(
-                subtitle,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
-              ),
-            ],
-          ),
-        ),
-        Icon(Icons.chevron_right_rounded, color: colors.onSurfaceVariant),
       ],
-    ),
-  );
+      if (more > 0)
+        TextButton(
+          onPressed: () => _openFolder(MailFolder.unread),
+          child: Text('$more건 더 보기 ›'),
+        ),
+      if (_inbox.accounts.isEmpty) ...[
+        const SizedBox(height: 10),
+        VoiceCard(
+          onTap: _openConnect,
+          child: const Text('예시 메일이에요. 메일 연동하기를 누르면 내 메일로 바뀌어요'),
+        ),
+      ],
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final reduceMotion = MediaQuery.of(context).disableAnimations;
-    if (_speech.listening && !reduceMotion) {
-      if (!_pulse.isAnimating) _pulse.repeat();
-    } else {
-      _pulse.stop();
-    }
     final wide = MediaQuery.sizeOf(context).width >= 840;
     final needsModel = !_speech.busy && !_speech.loaded;
     final onMic = _speech.busy || (needsModel && _downloads.downloading != null)
@@ -393,7 +432,79 @@ class _HomeScreenState extends State<HomeScreen>
           );
     final heard = '${_speech.heard} ${_speech.partial}'.trim();
 
-    final content = RefreshIndicator(
+    // Idle: the bar offers reading every unread mail; otherwise it shows
+    // what the mic is doing.
+    final idle =
+        micTitle.startsWith('눌러서 말하기') &&
+        _speech.status != Recognizer.missed &&
+        _inbox.mails.isNotEmpty;
+    final bar = Padding(
+      padding: wide
+          ? const EdgeInsets.fromLTRB(48, 0, 48, 24)
+          : const EdgeInsets.fromLTRB(20, 0, 20, 16),
+      child: Material(
+        color: colors.primary,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        clipBehavior: Clip.antiAlias,
+        child: Row(
+          children: [
+            Expanded(
+              child: InkWell(
+                onTap: _inbox.mails.isEmpty ? null : _openBriefing,
+                child: Semantics(
+                  liveRegion: true,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 14, 8, 14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          idle ? '$_unreadCount건 모두 듣기' : micTitle,
+                          style: TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w800,
+                            color: _speech.error
+                                ? colors.error
+                                : colors.onPrimary,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          idle ? '보낸 사람 · 제목 · 요약 순서로' : micHint,
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: colors.onPrimary.withValues(alpha: 0.75),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(8),
+              child: _MicButton(
+                busy: _speech.busy,
+                icon: needsModel
+                    ? Icons.download_rounded
+                    : _speech.listening || _asking
+                    ? Icons.stop_rounded
+                    : Icons.mic_none_rounded,
+                label: needsModel
+                    ? '${_speech.model.label} 모델 내려받기'
+                    : _speech.listening || _asking
+                    ? '듣기 멈추기'
+                    : '말하기 시작 · "오늘 메일 온 거 읊어줘"',
+                onPressed: onMic,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    final list = RefreshIndicator(
       onRefresh: _inbox.refresh,
       child: ListView(
         // Pullable even when the cards don't fill the screen.
@@ -447,92 +558,11 @@ class _HomeScreenState extends State<HomeScreen>
               ),
             ),
           ] else ...[
-            isDesktop
-                ? const ScreenTitle('메일 홈', '오늘 확인할 메일')
-                : const ScreenTitle('운전 중에도', '메일을 듣고\n말로 답장하세요'),
-            const SizedBox(height: 18),
-            if (_inbox.accounts.isEmpty)
-              _mailCard(
-                colors,
-                'N',
-                '예시 메일 · 안 읽은 메일 ${mockMails.length}건',
-                '메일 연동하기를 누르면 내 메일로 바뀌어요',
-                () => _openFolder(MailFolder.unread),
-              ),
-            for (final (i, a) in _inbox.accounts.indexed) ...[
-              if (i > 0) const SizedBox(height: 10),
-              _mailCard(
-                colors,
-                a.service.mark,
-                switch (_inbox.unread[a.address]) {
-                  null when _inbox.errors[a.address] == null =>
-                    '${a.service.label} · 불러오는 중',
-                  null => '${a.service.label} · 불러오지 못했어요',
-                  _ =>
-                    '${a.service.label} · 안 읽은 메일 ${_inbox.unreadTotal[a.address]}건',
-                },
-                _inbox.errors[a.address] ?? a.address,
-                // Nothing unread: the whole inbox is what's left to see.
-                () => _openFolder(
-                  _inbox.unreadTotal[a.address] == 0
-                      ? MailFolder.all
-                      : MailFolder.unread,
-                  only: a,
-                ),
-              ),
-            ],
+            ..._unreadHeader(colors),
+            const SizedBox(height: 14),
+            ..._unreadPreview(colors),
           ],
           if (!isDesktop) ...[
-            const SizedBox(height: 28),
-            Row(
-              children: [
-                _MicButton(
-                  pulse: _pulse,
-                  listening: _speech.listening,
-                  busy: _speech.busy,
-                  icon: needsModel
-                      ? Icons.download_rounded
-                      : _speech.listening || _asking
-                      ? Icons.stop_rounded
-                      : Icons.mic_none_rounded,
-                  label: needsModel
-                      ? '${_speech.model.label} 모델 내려받기'
-                      : _speech.listening || _asking
-                      ? '듣기 멈추기'
-                      : '말하기 시작',
-                  onPressed: onMic,
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Semantics(
-                    liveRegion: true,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          micTitle,
-                          style: TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.w800,
-                            color: _speech.error
-                                ? colors.error
-                                : colors.primary,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          micHint,
-                          style: TextStyle(
-                            fontSize: 15,
-                            color: colors.onSurfaceVariant,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ),
             if (_speech.listening || heard.isNotEmpty) ...[
               const SizedBox(height: 24),
               VoiceCard(
@@ -575,6 +605,12 @@ class _HomeScreenState extends State<HomeScreen>
           ],
         ],
       ),
+    );
+    final content = Column(
+      children: [
+        Expanded(child: list),
+        if (!isDesktop) bar,
+      ],
     );
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
@@ -642,129 +678,53 @@ class _HomeScreenState extends State<HomeScreen>
   }
 }
 
-/// Round flat brown mic. Idle: a hairline ring like the cards' borders. Listening: rings keep
-/// spreading out, so "it hears me" reads at a glance; with system animations
-/// off the rings stay still and the label carries the state.
+/// White round mic on the black listen bar. Listening shows a stop icon;
+/// the bar's text says what it hears.
 class _MicButton extends StatelessWidget {
   const _MicButton({
-    required this.pulse,
-    required this.listening,
     required this.busy,
     required this.icon,
     required this.label,
     required this.onPressed,
   });
 
-  final AnimationController pulse;
-  final bool listening;
   final bool busy;
   final IconData icon;
   final String label;
   final VoidCallback? onPressed;
 
-  static const _size = 76.0;
-  static const _fill = Color(0xff000000);
-  static const _glyph = Color(0xffffffff);
-
   @override
   Widget build(BuildContext context) {
-    return SizedBox.square(
-      dimension: _size * 1.6,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          AnimatedBuilder(
-            animation: pulse,
-            builder: (context, _) => CustomPaint(
-              size: const Size.square(_size * 1.6),
-              painter: _RingsPainter(
-                listening: listening,
-                t: pulse.value,
-                inner: _size / 2,
+    final colors = Theme.of(context).colorScheme;
+    return Semantics(
+      button: true,
+      label: label,
+      child: Tooltip(
+        message: label,
+        child: Opacity(
+          opacity: onPressed == null ? 0.4 : 1,
+          child: Material(
+            color: colors.onPrimary,
+            shape: const CircleBorder(),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              onTap: onPressed,
+              child: SizedBox.square(
+                dimension: 56,
+                child: busy
+                    ? Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: CircularProgressIndicator(
+                          strokeWidth: 3,
+                          color: colors.primary,
+                        ),
+                      )
+                    : Icon(icon, size: 28, color: colors.primary),
               ),
             ),
           ),
-          Semantics(
-            button: true,
-            label: label,
-            child: Tooltip(
-              message: label,
-              child: Opacity(
-                opacity: onPressed == null ? 0.4 : 1,
-                child: Container(
-                  width: _size,
-                  height: _size,
-                  // Flat like the rest of the app: no gradient, no glow.
-                  decoration: const BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: _fill,
-                  ),
-                  child: Material(
-                    type: MaterialType.transparency,
-                    shape: const CircleBorder(),
-                    clipBehavior: Clip.antiAlias,
-                    child: InkWell(
-                      onTap: onPressed,
-                      child: busy
-                          ? const Padding(
-                              padding: EdgeInsets.all(24),
-                              child: CircularProgressIndicator(
-                                strokeWidth: 3,
-                                color: _glyph,
-                              ),
-                            )
-                          : Icon(icon, size: 36, color: _glyph),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
-}
-
-class _RingsPainter extends CustomPainter {
-  _RingsPainter({
-    required this.listening,
-    required this.t,
-    required this.inner,
-  });
-
-  final bool listening;
-  final double t;
-  final double inner;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final center = size.center(Offset.zero);
-    final outer = size.width / 2;
-    final paint = Paint()..style = PaintingStyle.stroke;
-    // Resting: one hairline ring in the cards' border colour.
-    canvas.drawCircle(
-      center,
-      inner + 12,
-      paint
-        ..strokeWidth = 1.5
-        ..color = const Color(0xffd6d6d6),
-    );
-    if (!listening) return;
-    // Two rings, half a cycle apart, growing from the button edge outward.
-    for (final offset in [0.0, 0.5]) {
-      final p = (t + offset) % 1;
-      canvas.drawCircle(
-        center,
-        inner + 12 + (outer - inner - 12) * p,
-        paint
-          ..strokeWidth = 2
-          ..color = const Color(0xff000000).withValues(alpha: 0.45 * (1 - p)),
-      );
-    }
-  }
-
-  @override
-  bool shouldRepaint(_RingsPainter old) =>
-      old.t != t || old.listening != listening;
 }

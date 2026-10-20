@@ -77,11 +77,11 @@ class _BriefingScreenState extends State<BriefingScreen>
   }
 
   /// Reads who and what, then the AI summary once it's written (the whole
-  /// body if the summary model isn't downloaded or the summary fails).
-  Future<void> _read({bool next = false}) async {
+  /// body if [whole], or the summary model isn't downloaded or fails).
+  Future<void> _read({bool next = false, bool whole = false}) async {
     final mail = widget.mails[_index];
     final summarizer = Summarizer.instance;
-    final rest = await summarizer.installed
+    final rest = !whole && await summarizer.installed
         ? summarizer
               .summarize(mail)
               .last
@@ -121,14 +121,18 @@ class _BriefingScreenState extends State<BriefingScreen>
     _read(next: true);
   }
 
-  void _toggleReading() {
-    if (_reader.speaking.value) {
-      _auto = false;
-      _reader.stop();
-      return;
-    }
+  /// What the running read covers, for the card's "읽는 중" line.
+  bool _whole = false;
+
+  void _listen({required bool whole}) {
     _auto = widget.autoRead;
-    _read();
+    _whole = whole;
+    _read(whole: whole);
+  }
+
+  void _stopReading() {
+    _auto = false;
+    _reader.stop();
   }
 
   /// A screen is open on top, so the mail's WebView is put away.
@@ -195,46 +199,79 @@ class _BriefingScreenState extends State<BriefingScreen>
         const SizedBox(height: 16),
         Divider(color: colors.outlineVariant),
         const SizedBox(height: 16),
-        _SummaryCard(mail),
+        _SummaryCard(
+          mail,
+          listen: (summaryReady) => _reader.speaking.value
+              ? Row(
+                  children: [
+                    Expanded(
+                      child: SizedBox(
+                        height: 32,
+                        child: AnimatedBuilder(
+                          animation: _wave,
+                          builder: (context, _) => CustomPaint(
+                            painter: _WavePainter(_wave.value, colors.primary),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Text(
+                      _whole ? '전체 읽는 중' : '요약 읽는 중',
+                      style: TextStyle(color: colors.onSurfaceVariant),
+                    ),
+                    const SizedBox(width: 10),
+                    FilledButton.icon(
+                      onPressed: _stopReading,
+                      icon: const Icon(Icons.stop_rounded),
+                      label: const Text('멈추기'),
+                    ),
+                  ],
+                )
+              : Row(
+                  children: [
+                    Expanded(
+                      child: FilledButton.icon(
+                        // Reads the whole body anyway while there's no summary.
+                        onPressed: summaryReady
+                            ? () => _listen(whole: false)
+                            : null,
+                        icon: const Icon(Icons.play_arrow_rounded),
+                        label: const Text('요약 듣기'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        // Same box as the filled 요약 듣기 beside it.
+                        style: OutlinedButton.styleFrom(
+                          minimumSize: const Size.fromHeight(56),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          side: BorderSide(color: colors.outlineVariant),
+                          textStyle: const TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        onPressed: () => _listen(whole: true),
+                        icon: const Icon(Icons.play_arrow_rounded),
+                        label: Text(
+                          mail.length.isEmpty
+                              ? '전체 듣기'
+                              : '전체 듣기 ${mail.length}',
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+        ),
         const SizedBox(height: 16),
         if (mail.html case final html?)
           _MailHtml(html, hidden: _covered)
         else
           Text(mail.body, style: const TextStyle(fontSize: 18, height: 1.7)),
-        const SizedBox(height: 24),
-        VoiceCard(
-          onTap: _toggleReading,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                _reader.speaking.value ? '지금 읽어주는 중 · 눌러서 멈추기' : '눌러서 듣기',
-                style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
-              ),
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  Expanded(
-                    child: SizedBox(
-                      height: 40,
-                      child: AnimatedBuilder(
-                        animation: _wave,
-                        builder: (context, _) => CustomPaint(
-                          painter: _WavePainter(_wave.value, colors.primary),
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Text(
-                    mail.length,
-                    style: TextStyle(color: colors.onSurfaceVariant),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
         // Room so the last line can scroll out from under the reply pill.
         const SizedBox(height: 104),
       ],
@@ -243,10 +280,12 @@ class _BriefingScreenState extends State<BriefingScreen>
 }
 
 /// AI summary of [mail], written on the phone as it's read; offers the
-/// model download the first time. Tap a finished summary to hear it.
+/// model download the first time. [listen] builds the listen buttons
+/// under it, told whether the summary is ready to read.
 class _SummaryCard extends StatefulWidget {
-  const _SummaryCard(this.mail);
+  const _SummaryCard(this.mail, {required this.listen});
   final Mail mail;
+  final Widget Function(bool summaryReady) listen;
 
   @override
   State<_SummaryCard> createState() => _SummaryCardState();
@@ -371,13 +410,14 @@ class _SummaryCardState extends State<_SummaryCard> {
       body = Text(_text, style: const TextStyle(fontSize: 17, height: 1.6));
     }
     return VoiceCard(
-      onTap: done ? () => Reader.instance.speak(_text) : null,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(done ? 'AI 요약 · 눌러서 듣기' : 'AI 요약', style: hint),
+          Text('AI 요약', style: hint),
           const SizedBox(height: 8),
           body,
+          const SizedBox(height: 14),
+          widget.listen(done),
         ],
       ),
     );
