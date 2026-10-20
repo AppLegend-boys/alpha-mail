@@ -1,7 +1,8 @@
 import 'dart:typed_data';
 
-import 'package:alpha_mail/speech.dart';
-import 'package:alpha_mail/mail_account.dart';
+import 'package:alpha_mail/voice/speech.dart';
+import 'package:alpha_mail/mail/mail_account.dart';
+import 'package:alpha_mail/screens/compose.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -38,6 +39,32 @@ void main() {
       expect(model.tasks.every((t) => t.group == model.name), isTrue);
       expect(SpeechModel.forGroup(model.name), model);
     }
+  });
+
+  test('only a clear yes sends a mail by voice', () {
+    expect(sendAnswer('보내'), SendAnswer.yes);
+    expect(sendAnswer('응 보내 줘'), SendAnswer.yes);
+    expect(sendAnswer('네.'), SendAnswer.yes);
+    expect(sendAnswer('보내지 마'), SendAnswer.no);
+    expect(sendAnswer('아니요'), SendAnswer.no);
+    expect(sendAnswer('취소해 줘'), SendAnswer.no);
+    expect(sendAnswer('다시 할게'), SendAnswer.again);
+    // "네" inside other words is chatter, not an answer.
+    expect(sendAnswer('네 그런데 잠깐만'), SendAnswer.unclear);
+    expect(sendAnswer('음'), SendAnswer.unclear);
+  });
+
+  test('a recipient can be named or spelled aloud', () {
+    const contacts = {'허재혁': 'jh@manyfast.io', '토스뱅크': 'no-reply@toss.im'};
+    expect(findRecipient('허재혁 님에게요.', contacts), 'jh@manyfast.io');
+    expect(findRecipient('재혁', contacts), 'jh@manyfast.io');
+    expect(findRecipient('minji 골뱅이 네이버 닷 컴', contacts), 'minji@naver.com');
+    expect(
+      findRecipient('gunwoo405@gmail.com.', contacts),
+      'gunwoo405@gmail.com',
+    );
+    expect(findRecipient('김철수', contacts), isNull);
+    expect(findRecipient('어', contacts), isNull);
   });
 
   test('htmlToText keeps line breaks and drops markup', () {

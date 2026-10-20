@@ -4,12 +4,19 @@
 
 ---
 
+## 홈에 '불러오지 못했어요'가 남음 (메일함에서는 보임)
+
+- **날짜:** 2026-10-19
+- **문제:** 홈 카드가 '불러오지 못했어요'인데 눌러 들어가면 메일이 보이고, 홈으로 돌아와도 그대로임.
+- **원인:** 홈의 안 읽은 메일은 앱을 켤 때 한 번만 받고, 주기 확인은 기본값이 '안 함'. 켤 때 한 번 실패하면 다시 받지 않았음. 메일함 화면은 따로 받아서 성공함. 첫 실패 이유는 아직 모름 (카드 아랫줄에 오류 문구가 나옴).
+- **해결:** 다른 화면에서 홈으로 돌아올 때 실패한 계정만 다시 받음 (`MailInbox.retryFailed`).
+
 ## 홈에서 Gmail이 계속 '불러오는 중'
 
 - **날짜:** 2026-10-18
 - **문제:** 네이버는 불러왔는데 Gmail만 몇십 분째 '불러오는 중'. 로그에 오류 없음. 앱을 다시 켜니 바로 됨.
 - **원인:** 앱 쪽 Gmail 연결(IMAP 소켓)이 하나도 없었어요. 네트워크가 아니라 **구글 토큰 갱신(`flutter_appauth`) 호출이 답을 안 주고 멈춘** 것으로 보여요. 화면이 잠긴 상태에서 앱이 켜졌을 때 생겼어요. 시간 제한이 없어서 영원히 기다렸어요. (정확한 원인은 재현하지 못함)
-- **해결:** 토큰 요청은 20초, IMAP 서버 응답은 2분이 지나면 포기하고 '인터넷 연결을 확인해 주세요'를 보여요 (`lib/mail_account.dart`의 `_login`, `_inInbox`).
+- **해결:** 토큰 요청은 20초, IMAP 서버 응답은 2분이 지나면 포기하고 '인터넷 연결을 확인해 주세요'를 보여요 (`lib/mail/mail_account.dart`의 `_login`, `_inInbox`).
 - **확인:** 앱 소켓 보기 — 연결이 없는데 '불러오는 중'이면 앱 안에서 멈춘 거예요.
   ```sh
   adb shell "cat /proc/net/tcp6 /proc/net/tcp" | awk '$8==<앱 uid>'
@@ -20,7 +27,7 @@
 - **날짜:** 2026-10-18
 - **문제:** 일부 한국 메일의 제목과 보낸 사람이 암호 같은 글자로 보이고, 본문도 깨짐. 로그에 `Error: no encoding found for [euc-kr].`
 - **원인:** 메일 라이브러리 `enough_mail`이 EUC-KR(옛 한국어 인코딩, CP949·`ks_c_5601-1987`이라고도 씀)을 지원하지 않아요. 그래서 풀지 못한 채로 남겨 둬요.
-- **해결:** `lib/mail_account.dart`의 `koreanHeader`(제목·이름)와 `koreanText`(본문)가 `cp949_codec`으로 직접 풀어요. 로그의 `no encoding found`는 라이브러리가 찍는 거라 계속 보여도 괜찮아요.
+- **해결:** `lib/mail/mail_account.dart`의 `koreanHeader`(제목·이름)와 `koreanText`(본문)가 `cp949_codec`으로 직접 풀어요. 로그의 `no encoding found`는 라이브러리가 찍는 거라 계속 보여도 괜찮아요.
 - **다음에:** `charset` 패키지의 EUC-KR은 **틀린 글자를 내요**(안 → 陑). 한국어 인코딩 패키지를 바꿀 땐 `test/korean_mail_test.dart`의 표준 바이트 테스트(`BE C8` = 안)로 먼저 확인해요.
 
 ## 답장 화면에 들어가면 `setRequestedFrameRate` 로그가 계속 뜸
@@ -32,7 +39,7 @@
   I/VRI[MainActivity]: Requested frameRateCategory 1 by io.flutter.plugins.webviewflutter...
   ```
 - **원인:** 답장 화면은 메일 내용 화면 **위에 쌓여서** 열려요. 그래서 아래에 깔린 메일 본문 WebView(`_MailHtml`)도 살아 있어요. Android WebView는 다른 화면에 가려 안 보여도 계속 다시 그렸어요. 단순한 로그가 아니라 **배터리를 쓰는 문제**예요. '메일 작성'은 뒤에 WebView가 없어서 괜찮았던 거예요.
-- **해결:** 답장 화면이 열려 있는 동안에는 WebView를 화면에서 떼어 둬요(`_MailHtml(hidden: true)`). 컨트롤러는 그대로 두기 때문에 돌아오면 같은 내용과 높이로 다시 붙어요. (`lib/screens.dart`의 `_BriefingScreenState._reply`)
+- **해결:** 답장 화면이 열려 있는 동안에는 WebView를 화면에서 떼어 둬요(`_MailHtml(hidden: true)`). 컨트롤러는 그대로 두기 때문에 돌아오면 같은 내용과 높이로 다시 붙어요. (`lib/screens/mail_view.dart`의 `_BriefingScreenState._reply`)
 - **확인:** 답장 화면에서 아래 명령의 결과가 0에 가까우면 고쳐진 거예요.
   ```sh
   adb logcat -c; sleep 3; adb logcat -d | grep -c setRequestedFrameRate

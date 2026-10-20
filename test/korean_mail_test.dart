@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:alpha_mail/mail_account.dart';
+import 'package:alpha_mail/mail/mail_account.dart';
 import 'package:cp949_codec/cp949_codec.dart' show cp949;
 import 'package:enough_mail/enough_mail.dart';
 import 'package:flutter_test/flutter_test.dart';

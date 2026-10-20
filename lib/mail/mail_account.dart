@@ -8,16 +8,16 @@ import 'package:enough_mail/enough_mail.dart';
 import 'package:flutter_appauth/flutter_appauth.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-import 'screens.dart';
+import 'mail.dart';
 
 /// Mail services the app can read over IMAP. Naver takes an app password,
 /// which needs two-step login turned on; Gmail takes Google sign-in.
 enum MailService {
-  naver('네이버 메일', 'N', Color(0xff03c75a), 'imap.naver.com'),
+  naver('네이버 메일', 'N', Color(0xff03c75a), 'imap.naver.com', 'smtp.naver.com'),
   // Gmail keeps IMAP always on since 2025, so there is no setting to flip.
-  gmail('Gmail', 'G', Color(0xffea4335), 'imap.gmail.com');
+  gmail('Gmail', 'G', Color(0xffea4335), 'imap.gmail.com', 'smtp.gmail.com');
 
-  const MailService(this.label, this.mark, this.color, this.host);
+  const MailService(this.label, this.mark, this.color, this.host, this.smtp);
 
   final String label;
 
@@ -27,6 +27,9 @@ enum MailService {
   /// Brand colour behind [mark].
   final Color color;
   final String host;
+
+  /// Server mail is sent through, over SSL on port 465.
+  final String smtp;
 }
 
 // iOS-type OAuth client from Google Cloud Console, used on every platform:
@@ -90,25 +93,79 @@ class MailAccount {
     return MailAccount.google(email, result.refreshToken!);
   }
 
-  /// Logs in to the IMAP server; Gmail trades its refresh token for a
-  /// fresh hour-long access token first.
+  /// Trades Gmail's refresh token for a fresh hour-long access token.
+  Future<String> _accessToken() async {
+    final token = await _appAuth
+        .token(
+          TokenRequest(
+            googleClientId,
+            _googleRedirect,
+            serviceConfiguration: _google,
+            refreshToken: secret,
+          ),
+        )
+        // Seen to never answer after the app was started on a locked phone.
+        .timeout(const Duration(seconds: 20));
+    return token.accessToken!;
+  }
+
+  /// Logs in to the IMAP server.
   Future<void> _login(ImapClient client) async {
     switch (service) {
       case MailService.naver:
         await client.login(id, secret);
       case MailService.gmail:
-        final token = await _appAuth
-            .token(
-              TokenRequest(
-                googleClientId,
-                _googleRedirect,
-                serviceConfiguration: _google,
-                refreshToken: secret,
-              ),
-            )
-            // Seen to never answer after the app was started on a locked phone.
-            .timeout(const Duration(seconds: 20));
-        await client.authenticateWithOAuth2(address, token.accessToken!);
+        await client.authenticateWithOAuth2(address, await _accessToken());
+    }
+  }
+
+  /// Sends a plain-text mail from this account. With [replyTo] it threads
+  /// under that mail in the recipient's mail app.
+  // ponytail: Gmail files sent mail in 보낸 메일 itself; if Naver doesn't,
+  // append the message to its sent folder over IMAP.
+  Future<void> send({
+    required String to,
+    required String subject,
+    required String text,
+    Mail? replyTo,
+  }) async {
+    final builder = MessageBuilder()
+      ..from = [MailAddress(null, address)]
+      ..to = [MailAddress(null, to)]
+      ..subject = subject
+      ..text = text;
+    if (replyTo?.messageId case final id?) {
+      builder
+        ..setHeader('In-Reply-To', id)
+        ..setHeader('References', id);
+    }
+    final client = SmtpClient(service.smtp);
+    Future<void> deliver() async {
+      await client.connectToServer(service.smtp, 465);
+      await client.ehlo();
+      switch (service) {
+        case MailService.naver:
+          await client.authenticate(id, secret, AuthMechanism.login);
+        case MailService.gmail:
+          await client.authenticate(
+            address,
+            await _accessToken(),
+            AuthMechanism.xoauth2,
+          );
+      }
+      await client.sendMessage(
+        builder.buildMimeMessage(),
+        use8BitEncoding: true,
+      );
+    }
+
+    try {
+      // SmtpClient has no response timeout of its own; a silent server
+      // would leave 보내는 중 forever.
+      await deliver().timeout(const Duration(minutes: 1));
+    } finally {
+      await client.quit().catchError((_) => SmtpResponse(const []));
+      await client.disconnect().catchError((_) {});
     }
   }
 
@@ -318,6 +375,7 @@ class MailAccount {
       uid: m.uid,
       // Never mark sent mail read; it is the user's own.
       seen: sent || m.isSeen,
+      messageId: m.getHeaderValue('message-id')?.trim(),
     );
   }
 
@@ -338,7 +396,9 @@ class MailAccount {
 String mailError(MailService service, Object error) => switch (error) {
   SocketException() || TimeoutException() => '인터넷 연결을 확인해 주세요.',
   FlutterAppAuthUserCancelledException() => '구글 로그인을 취소했어요.',
-  ImapException() || FlutterAppAuthPlatformException() => switch (service) {
+  ImapException() ||
+  SmtpException() ||
+  FlutterAppAuthPlatformException() => switch (service) {
     MailService.naver =>
       '로그인하지 못했어요. 평소 비밀번호가 아니라 애플리케이션 비밀번호를 넣었는지, '
           '네이버 메일에서 IMAP/SMTP 사용을 켰는지 확인해 주세요.',

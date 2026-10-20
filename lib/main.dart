@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'screens.dart';
-import 'speech.dart';
 
 void main() {
   // SystemChrome below talks to the platform, which needs the binding.
@@ -101,7 +100,7 @@ class _AlphaMailAppState extends State<AlphaMailApp> {
     theme: _theme(),
     home: Stack(
       children: [
-        const SpeechScreen(),
+        const HomeScreen(),
         IgnorePointer(
           ignoring: !_splash,
           child: AnimatedOpacity(

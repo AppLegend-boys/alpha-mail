@@ -5,7 +5,7 @@ import 'package:background_downloader/background_downloader.dart' as bd;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_gemma/flutter_gemma.dart';
 
-import 'screens.dart' show Mail;
+import 'mail.dart';
 
 /// Summarises mail on the phone with Gemma 4 E2B on LiteRT-LM, on the GPU
 /// when it can. The model is downloaded once; mail never leaves the device.
