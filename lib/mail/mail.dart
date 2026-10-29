@@ -18,7 +18,16 @@ class Mail {
     this.seen = false,
     this.address = '',
     this.messageId,
+    this.partial = false,
+    this.folder = MailFolder.all,
   });
+
+  /// Fetched without its attachments for the list: [body] is only the text
+  /// part and [html] is missing. [MailAccount.fetchWhole] gets the rest.
+  final bool partial;
+
+  /// Mailbox it's in, to fetch it again from.
+  final MailFolder folder;
 
   /// Message-ID header, so a reply threads under this mail.
   final String? messageId;

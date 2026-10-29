@@ -62,13 +62,19 @@ final Map<String, Problem> problems = {
   ),
   'L-03': (
     title: '마이크로소프트 로그인 실패',
-    cause: '마이크로소프트 로그인이 끝나지 않았거나, 메일 접근 권한이 없거나 만료됐어요.',
+    cause: '마이크로소프트 로그인이 끝나지 않았거나, Outlook에서 IMAP 사용이 꺼져 있거나, 메일 접근 권한이 만료됐어요.',
     steps: [
+      'outlook.com 설정 > 메일 > 전달 및 IMAP에서 '
+          '"장치 및 앱에서 IMAP 사용"을 켜고 저장해요.',
       '메일 연동하기 > Outlook에서 다시 로그인하고 권한 요청에 [동의]를 눌러요.',
       '그래도 안 되면 마이크로소프트 계정의 앱 권한에서 Alpha Mail을 삭제한 뒤 다시 연결해 주세요.',
       '회사·학교 계정이면 관리자가 IMAP·SMTP 접근을 막아 두었을 수 있어요. 관리자에게 문의해 주세요.',
     ],
     links: [
+      (
+        'Outlook IMAP 설정 열기',
+        Uri.parse('https://outlook.live.com/mail/0/options/mail/forwarding'),
+      ),
       ('마이크로소프트 앱 권한 열기', Uri.parse('https://account.live.com/consent/Manage')),
     ],
   ),

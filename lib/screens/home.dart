@@ -906,7 +906,12 @@ class _HomeScreenState extends State<HomeScreen> {
         },
         child: Focus(
           autofocus: true,
-          child: Scaffold(body: SafeArea(bottom: false, child: content)),
+          child: Scaffold(
+            // Each screen's own Scaffold moves up for the keyboard; this
+            // one doing it too left the page above it twice as short.
+            resizeToAvoidBottomInset: false,
+            body: SafeArea(bottom: false, child: content),
+          ),
         ),
       ),
     );

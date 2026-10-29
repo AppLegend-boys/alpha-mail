@@ -104,6 +104,12 @@ class MailFolderScreen extends StatefulWidget {
   State<MailFolderScreen> createState() => _MailFolderScreenState();
 }
 
+/// Each folder's newest page per account (and unread total) from the last
+/// time it was opened, shown at once while it is fetched again.
+// shortcut: kept in memory only, so the first open after launch still
+// waits; save to disk if that gets slow.
+final _shownBefore = <(MailFolder, String), (List<Mail>, int)>{};
+
 class _MailFolderScreenState extends State<MailFolderScreen> {
   late String? _only = widget.only?.address;
   final _mails = <String, List<Mail>>{};
@@ -123,6 +129,12 @@ class _MailFolderScreenState extends State<MailFolderScreen> {
   void initState() {
     super.initState();
     for (final account in widget.accounts) {
+      if (_shownBefore[(widget.folder, account.address)]
+          case (final mails, final total)?) {
+        _mails[account.address] = mails;
+        _totals[account.address] = total;
+        if (mails.length >= widget.limit) _more.add(account.address);
+      }
       _fetch(account);
     }
   }
@@ -151,8 +163,18 @@ class _MailFolderScreenState extends State<MailFolderScreen> {
         ),
       };
       if (!mounted) return;
+      if (before == null) {
+        _shownBefore[(widget.folder, account.address)] = (
+          mails,
+          _totals[account.address] ?? 0,
+        );
+      }
       setState(() {
-        _mails[account.address] = [...?_mails[account.address], ...mails];
+        // The newest page replaces what was shown from last time.
+        _mails[account.address] = [
+          if (before != null) ...?_mails[account.address],
+          ...mails,
+        ];
         mails.length >= widget.limit
             ? _more.add(account.address)
             : _more.remove(account.address);

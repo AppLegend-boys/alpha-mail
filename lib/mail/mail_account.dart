@@ -323,7 +323,16 @@ class MailAccount {
     );
     try {
       await client.connectToServer(service.host, 993);
-      await _login(client);
+      try {
+        await _login(client);
+      } on SocketException catch (e) {
+        // The server was reached, so a dropped line here is it refusing
+        // the login (Outlook hangs up when IMAP access isn't granted), not
+        // the phone being offline.
+        throw ImapException(client, 'login: $e');
+      } on TimeoutException catch (e) {
+        throw ImapException(client, 'login: $e');
+      }
       final box = switch (folder) {
         MailFolder.sent => await client.selectMailbox(
           await _box(client, (b) => b.isSent, 'sent|보낸'),
@@ -377,14 +386,22 @@ class MailAccount {
         folder: folder,
       )).mails;
     }
-    final fetched = await client.fetchRecentMessages(
+    final sized = await client.fetchRecentMessages(
       messageCount: limit,
-      criteria: '(UID FLAGS BODY.PEEK[])',
+      criteria: '(UID RFC822.SIZE)',
     );
-    return [
-      for (final m in fetched.messages.reversed) _toMail(m, folder: folder),
-    ];
+    return _forList(client, sized.messages, folder);
   });
+
+  /// [mail] whole, with the HTML and attachments a list leaves out.
+  Future<Mail> fetchWhole(Mail mail) =>
+      _inInbox(folder: mail.folder, (client, _) async {
+        final fetched = await client.uidFetchMessage(
+          mail.uid!,
+          '(UID FLAGS BODY.PEEK[])',
+        );
+        return _toMail(fetched.messages.single, folder: mail.folder);
+      });
 
   /// How many mails match [criteria] (below UID [before], when given), with
   /// the newest [limit] fetched whole, newest first.
@@ -410,13 +427,70 @@ class MailAccount {
     ]..sort();
     if (ids.isEmpty) return (total: 0, mails: <Mail>[]);
     final newest = ids.sublist(ids.length > limit ? ids.length - limit : 0);
-    final fetched = await client.uidFetchMessages(
+    final sized = await client.uidFetchMessages(
       MessageSequence.fromIds(newest, isUid: true),
-      '(UID FLAGS BODY.PEEK[])',
+      '(UID RFC822.SIZE)',
     );
-    final mails = [for (final m in fetched.messages) _toMail(m, folder: folder)]
-      ..sort((a, b) => b.uid!.compareTo(a.uid!));
-    return (total: ids.length, mails: mails);
+    return (
+      total: ids.length,
+      mails: await _forList(client, sized.messages, folder),
+    );
+  }
+
+  /// Mails up to this size come whole; bigger ones carry attachments,
+  /// which took most of a list's loading time.
+  static const _wholeLimit = 100 * 1024;
+
+  /// The [sized] mails (UID and size fetched) for a list, newest first:
+  /// small ones whole, big ones with only their text, to fetch whole when
+  /// opened ([fetchWhole]).
+  Future<List<Mail>> _forList(
+    ImapClient client,
+    List<MimeMessage> sized,
+    MailFolder folder,
+  ) async {
+    Future<List<MimeMessage>> fetch(bool big, String what) async {
+      final uids = [
+        for (final m in sized)
+          if ((m.size ?? 0) > _wholeLimit == big) m.uid!,
+      ];
+      if (uids.isEmpty) return [];
+      return (await client.uidFetchMessages(
+        MessageSequence.fromIds(uids, isUid: true),
+        what,
+      )).messages;
+    }
+
+    final mails = [
+      for (final m in await fetch(false, '(UID FLAGS BODY.PEEK[])'))
+        _toMail(m, folder: folder),
+    ];
+    for (final m in await fetch(
+      true,
+      '(UID FLAGS BODYSTRUCTURE BODY.PEEK[HEADER])',
+    )) {
+      final text =
+          m.body?.findFirst(MediaSubtype.textPlain) ??
+          m.body?.findFirst(MediaSubtype.textHtml);
+      String? body;
+      // shortcut: a big mail that is one part (no fetch ID) shows no
+      // preview until opened.
+      if (text?.fetchId case final id?) {
+        final fetched = await client.uidFetchMessage(
+          m.uid!,
+          '(BODY.PEEK[$id])',
+        );
+        if (fetched.messages.firstOrNull?.getPart(id) case final part?) {
+          m.setPart(id, part);
+          body = _asKorean(part) ?? part.decodeContentText();
+          if (text!.contentType?.mediaType.sub == MediaSubtype.textHtml) {
+            body = htmlToText(body ?? '');
+          }
+        }
+      }
+      mails.add(_toMail(m, folder: folder, preview: body ?? ''));
+    }
+    return mails..sort((a, b) => b.uid!.compareTo(a.uid!));
   }
 
   /// A special folder: flagged (\Sent, \Trash) where the server supports
@@ -433,11 +507,16 @@ class MailAccount {
   }
 
   /// Sent mails show who they went to in place of the sender.
-  Mail _toMail(MimeMessage m, {MailFolder folder = MailFolder.all}) {
+  /// With [preview], [m] has only its headers and that is its text.
+  Mail _toMail(
+    MimeMessage m, {
+    MailFolder folder = MailFolder.all,
+    String? preview,
+  }) {
     final sent = folder == MailFolder.sent;
     final from = (sent ? m.to : m.from)?.firstOrNull;
-    final text = koreanText(m, MediaSubtype.textPlain);
-    final html = koreanText(m, MediaSubtype.textHtml);
+    final text = preview ?? koreanText(m, MediaSubtype.textPlain);
+    final html = preview != null ? null : koreanText(m, MediaSubtype.textHtml);
     final name = from?.personalName?.trim().isNotEmpty == true
         ? koreanHeader(from!.personalName!.trim())
         : from?.email;
@@ -463,6 +542,8 @@ class MailAccount {
       // the inbox's, where marking read goes.
       seen: sent || folder == MailFolder.trash || m.isSeen,
       messageId: m.getHeaderValue('message-id')?.trim(),
+      partial: preview != null,
+      folder: folder,
     );
   }
 
@@ -552,12 +633,17 @@ String koreanHeader(String header) =>
 
 /// The text/plain or text/html body, read as EUC-KR when it is declared so.
 String? koreanText(MimeMessage m, MediaSubtype subtype) {
-  final decoded = subtype == MediaSubtype.textPlain
-      ? m.decodeTextPlainPart()
-      : m.decodeTextHtmlPart();
   final part = _findPart(m, subtype);
-  final charset = part?.getHeaderContentType()?.charset?.toLowerCase();
-  if (part == null || !_koreanCharsets.contains(charset)) return decoded;
+  return (part == null ? null : _asKorean(part)) ??
+      (subtype == MediaSubtype.textPlain
+          ? m.decodeTextPlainPart()
+          : m.decodeTextHtmlPart());
+}
+
+/// [part]'s text if it is declared EUC-KR, which enough_mail misreads.
+String? _asKorean(MimePart part) {
+  final charset = part.getHeaderContentType()?.charset?.toLowerCase();
+  if (!_koreanCharsets.contains(charset)) return null;
   final encoding = part
       .getHeaderValue('content-transfer-encoding')
       ?.trim()
@@ -565,7 +651,7 @@ String? koreanText(MimeMessage m, MediaSubtype subtype) {
   final bytes = encoding == 'quoted-printable'
       ? _quotedBytes(part.mimeData?.decodeText(null, null) ?? '')
       : part.decodeContentBinary();
-  return bytes == null ? decoded : cp949.decode(bytes);
+  return bytes == null ? null : cp949.decode(bytes);
 }
 
 /// The part [MimePart.decodeTextPlainPart] reads: the first one, depth first.
