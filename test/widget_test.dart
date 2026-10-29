@@ -1,7 +1,9 @@
 import 'dart:typed_data';
 
-import 'package:alpha_mail/speech.dart';
-import 'package:alpha_mail/naver_mail.dart';
+import 'package:alpha_mail/voice/speech.dart';
+import 'package:alpha_mail/mail/mail_account.dart';
+import 'package:alpha_mail/screens/compose.dart';
+import 'package:alpha_mail/screens/mail_view.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -40,6 +42,48 @@ void main() {
     }
   });
 
+  test('only a clear yes sends a mail by voice', () {
+    expect(sendAnswer('보내'), SendAnswer.yes);
+    expect(sendAnswer('응 보내 줘'), SendAnswer.yes);
+    expect(sendAnswer('네.'), SendAnswer.yes);
+    expect(sendAnswer('보내지 마'), SendAnswer.no);
+    expect(sendAnswer('아니요'), SendAnswer.no);
+    expect(sendAnswer('취소해 줘'), SendAnswer.no);
+    expect(sendAnswer('다시 할게'), SendAnswer.again);
+    // "네" inside other words is chatter, not an answer.
+    expect(sendAnswer('네 그런데 잠깐만'), SendAnswer.unclear);
+    expect(sendAnswer('음'), SendAnswer.unclear);
+  });
+
+  test('only a bare "다음" skips to the next mail', () {
+    expect(isSkipCommand('다음'), isTrue);
+    expect(isSkipCommand('다음.'), isTrue);
+    expect(isSkipCommand('다음 거'), isTrue);
+    expect(isSkipCommand('넘겨 줘'), isTrue);
+    // The app's own voice or mail text read aloud.
+    expect(isSkipCommand('다음 주 월요일까지 제출해 주세요'), isFalse);
+    expect(isSkipCommand('다음 메일입니다'), isFalse);
+  });
+
+  test('a recipient can be named or spelled aloud', () {
+    const contacts = {'허재혁': 'jh@manyfast.io', '토스뱅크': 'no-reply@toss.im'};
+    expect(findRecipient('허재혁 님에게요.', contacts), 'jh@manyfast.io');
+    expect(findRecipient('재혁', contacts), 'jh@manyfast.io');
+    expect(findRecipient('minji 골뱅이 네이버 닷 컴', contacts), 'minji@naver.com');
+    expect(
+      findRecipient('gunwoo405@gmail.com.', contacts),
+      'gunwoo405@gmail.com',
+    );
+    expect(findRecipient('김철수', contacts), isNull);
+    expect(findRecipient('어', contacts), isNull);
+    // To oneself: the account the mail goes from.
+    const me = 'gunwoo405@naver.com';
+    expect(findRecipient('나한테', contacts, me: me), me);
+    expect(findRecipient('내게요.', contacts, me: me), me);
+    expect(findRecipient('나에게', contacts, me: me), me);
+    expect(findRecipient('나한테', contacts), isNull);
+  });
+
   test('htmlToText keeps line breaks and drops markup', () {
     const html =
         '<html><head><style>p{color:red}</style></head><body>'
@@ -48,8 +92,36 @@ void main() {
     expect(htmlToText(html), '안녕하세요 김서연입니다.\n견적서 & 일정\nA<B\n끝');
   });
 
-  test('NaverMail keeps only the ID part of an address', () {
-    expect(NaverMail(' minji@naver.com ', 'pw').id, 'minji');
-    expect(NaverMail('minji', 'pw').address, 'minji@naver.com');
+  test('MailAccount keeps only the ID part of a Naver address', () {
+    expect(MailAccount(' minji@naver.com ', 'pw').id, 'minji');
+    expect(MailAccount('minji', 'pw').address, 'minji@naver.com');
+    // Gmail keeps the whole address, Workspace domains included.
+    final gmail = MailAccount.google('minji@company.com', 'token');
+    expect(gmail.service, MailService.gmail);
+    expect(gmail.address, 'minji@company.com');
+  });
+
+  test('MailAccount reads every saved format', () {
+    final legacy = MailAccount.fromJson({'id': 'minji', 'password': 'pw'})!;
+    expect(
+      (legacy.service, legacy.address),
+      (MailService.naver, 'minji@naver.com'),
+    );
+    final gmail = MailAccount.fromJson({
+      'service': 'gmail',
+      'address': 'minji@gmail.com',
+      'secret': 'token',
+    })!;
+    expect((gmail.service, gmail.secret), (MailService.gmail, 'token'));
+    final outlook = MailAccount.fromJson({
+      'service': 'outlook',
+      'address': 'minji@outlook.com',
+      'secret': 'token',
+    })!;
+    expect(
+      (outlook.service, outlook.address),
+      (MailService.outlook, 'minji@outlook.com'),
+    );
+    expect(MailAccount.fromJson({'nope': 1}), isNull);
   });
 }

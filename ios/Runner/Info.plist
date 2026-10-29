@@ -68,5 +68,19 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<!-- Google sign-in redirect: googleClientId in lib/mail_account.dart, reversed. -->
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.452100579076-7eh0ik6r8f41cp5pmvh770b0ke2q7ju1</string>
+				<!-- Microsoft sign-in redirect: _microsoftRedirect in lib/mail/mail_account.dart. -->
+				<string>com.applegend.alphamail</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

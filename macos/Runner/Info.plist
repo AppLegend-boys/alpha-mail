@@ -30,5 +30,17 @@
 	<string>말씀하신 내용을 이 Mac 안에서 글자로 바꾸기 위해 마이크를 사용해요.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<!-- Google sign-in redirect: googleClientId in lib/mail_account.dart, reversed. -->
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.452100579076-7eh0ik6r8f41cp5pmvh770b0ke2q7ju1</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

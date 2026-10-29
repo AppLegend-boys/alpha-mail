@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.alpha_mail"
+    namespace = "com.applegend.alphamail"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -16,7 +16,7 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.alpha_mail"
+        applicationId = "com.applegend.alphamail"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
@@ -27,6 +27,9 @@ android {
         // flag during build.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        // Google sign-in redirect: googleClientId in lib/mail_account.dart, reversed.
+        manifestPlaceholders["appAuthRedirectScheme"] =
+            "com.googleusercontent.apps.452100579076-7eh0ik6r8f41cp5pmvh770b0ke2q7ju1"
     }
 
     buildTypes {
