@@ -16,6 +16,17 @@ enum SendAnswer { yes, no, again, unclear }
 // the whole answer.
 final _no = RegExp(r'취소|그만|나중|아니|말아|보내지\s*마');
 final _again = RegExp(r'다시');
+
+/// Mail domains offered after the recipient's ID, most used in Korea first.
+const _domains = [
+  'naver.com',
+  'gmail.com',
+  'daum.net',
+  'hanmail.net',
+  'kakao.com',
+  'nate.com',
+  'outlook.com',
+];
 final _yes = RegExp(r'보내|^\s*(응|네|예)\s*[.!?]?\s*$');
 
 /// Reads the answer to 보낼까요?. Only a clear yes sends.
@@ -496,12 +507,50 @@ class _ComposeScreenState extends State<ComposeScreen> {
           ),
           (
             '받는 사람',
-            TextField(
-              controller: _to,
-              style: text,
-              keyboardType: TextInputType.emailAddress,
-              onChanged: _edited,
-              decoration: bare.copyWith(hintText: '메일 주소'),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _to,
+                    style: text,
+                    keyboardType: TextInputType.emailAddress,
+                    onChanged: _edited,
+                    decoration: bare.copyWith(hintText: '메일 주소'),
+                  ),
+                ),
+                // Swaps what's after @, keeping the ID typed before it.
+                PopupMenuButton<String>(
+                  tooltip: '@ 뒤 주소 고르기',
+                  onSelected: (domain) {
+                    final id = _to.text.trim().split('@').first;
+                    _to.text = '$id@$domain';
+                    _edited(_to.text);
+                  },
+                  itemBuilder: (_) => [
+                    for (final d in _domains)
+                      PopupMenuItem(value: d, child: Text('@$d')),
+                  ],
+                  child: Padding(
+                    padding: const EdgeInsets.only(left: 8),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          '@주소',
+                          style: TextStyle(
+                            fontSize: 15,
+                            color: colors.onSurfaceVariant,
+                          ),
+                        ),
+                        Icon(
+                          Icons.arrow_drop_down_rounded,
+                          color: colors.onSurfaceVariant,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
           (
