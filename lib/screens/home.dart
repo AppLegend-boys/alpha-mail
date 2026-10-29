@@ -214,6 +214,8 @@ class _HomeScreenState extends State<HomeScreen> {
       MailMenuScreen(
         from: [homeLabel],
         folderScreen: (folder, from) => _folderScreen(folder, from: from),
+        inbox: _inbox,
+        unreadCount: () => _unreadCount,
       ),
     );
   }

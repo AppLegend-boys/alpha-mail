@@ -75,19 +75,22 @@ class VoiceCard extends StatelessWidget {
   }
 }
 
-/// One row of a menu or settings list: [title] over [sub], with [trailing]
-/// on the right, or a chevron when it opens a screen.
+/// One row of a menu or settings list: [title] (and a lighter [note] beside
+/// it) over [sub], with [trailing] on the right, or a chevron when it opens
+/// a screen.
 class MenuRow extends StatelessWidget {
   const MenuRow(
     this.title,
     this.sub, {
     super.key,
+    this.note,
     this.icon,
     this.trailing,
     this.onTap,
   });
 
   final String title;
+  final String? note;
   final String sub;
   final IconData? icon;
   final Widget? trailing;
@@ -110,8 +113,21 @@ class MenuRow extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    title,
+                  Text.rich(
+                    TextSpan(
+                      text: title,
+                      children: [
+                        if (note != null)
+                          TextSpan(
+                            text: ' $note',
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                              color: colors.onSurfaceVariant,
+                            ),
+                          ),
+                      ],
+                    ),
                     style: const TextStyle(
                       fontSize: 17,
                       fontWeight: FontWeight.w700,

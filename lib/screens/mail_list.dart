@@ -17,9 +17,15 @@ class MailMenuScreen extends StatelessWidget {
     super.key,
     required this.from,
     required this.folderScreen,
+    required this.inbox,
+    required this.unreadCount,
   });
 
   final List<String> from;
+
+  /// Redraws [unreadCount], shown beside 안 읽은 메일, as mail comes in.
+  final Listenable inbox;
+  final int Function() unreadCount;
 
   /// The folder to open, given its breadcrumb.
   final Widget Function(MailFolder folder, List<String> from) folderScreen;
@@ -39,13 +45,19 @@ class MailMenuScreen extends StatelessWidget {
           (MailFolder.starred, Icons.star_outline_rounded, '별표·중요 표시한 메일'),
           (MailFolder.trash, Icons.delete_outline_rounded, '지운 메일'),
         ])
-          MenuRow(
-            folder == MailFolder.all ? '전체 메일함' : folder.label,
-            sub,
-            icon: icon,
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => folderScreen(folder, trail)),
+          ListenableBuilder(
+            listenable: inbox,
+            builder: (context, _) => MenuRow(
+              folder == MailFolder.all ? '전체 메일함' : folder.label,
+              sub,
+              note: folder == MailFolder.unread && unreadCount() > 0
+                  ? '(${unreadCount()}건)'
+                  : null,
+              icon: icon,
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => folderScreen(folder, trail)),
+              ),
             ),
           ),
       ],
