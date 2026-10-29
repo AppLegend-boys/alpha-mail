@@ -58,8 +58,7 @@ const _googleScopes = ['openid', 'email', 'https://mail.google.com/'];
 
 // Public client from an Azure app registration ("Mobile and desktop" platform,
 // redirect URI below, any Microsoft account). Not a secret; PKCE.
-// ponytail: empty until the app is registered; Outlook sign-in fails clearly.
-const microsoftClientId = '';
+const microsoftClientId = '5c79bf64-561f-4ca2-9f46-2921564f683b';
 // Also set in ios/Runner/Info.plist and the RedirectUriReceiverActivity
 // intent filter in android/app/src/main/AndroidManifest.xml.
 const _microsoftRedirect = 'com.applegend.alphamail://oauthredirect';
