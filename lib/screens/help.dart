@@ -198,39 +198,90 @@ class ProblemText extends StatelessWidget {
   }
 }
 
-/// 도움말: every error code and what to do about it.
-class HelpScreen extends StatelessWidget {
+/// 도움말: a table of every error code; tapping one opens its fix and
+/// closes whichever was open.
+class HelpScreen extends StatefulWidget {
   const HelpScreen({super.key, required this.from});
 
   final List<String> from;
 
   @override
+  State<HelpScreen> createState() => _HelpScreenState();
+}
+
+class _HelpScreenState extends State<HelpScreen> {
+  String? _open;
+
+  @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return AppPage(
-      trail: [...from, '도움말'],
+      trail: [...widget.from, '도움말'],
       children: [
         const ScreenTitle('도움말', '오류 코드별 해결 방법'),
         const SizedBox(height: 16),
-        for (final MapEntry(key: code, value: problem) in problems.entries)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 10),
-            child: VoiceCard(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '$code · ${problem.title}',
-                    style: const TextStyle(
-                      fontSize: 17,
-                      fontWeight: FontWeight.w700,
+        VoiceCard(
+          padding: EdgeInsets.zero,
+          child: Column(
+            children: [
+              for (final (i, MapEntry(key: code, value: problem))
+                  in problems.entries.indexed) ...[
+                if (i > 0) Divider(height: 1, color: colors.outlineVariant),
+                Semantics(
+                  expanded: _open == code,
+                  child: InkWell(
+                    onTap: () =>
+                        setState(() => _open = _open == code ? null : code),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 14,
+                      ),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 56,
+                            child: Text(
+                              code,
+                              style: const TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                          Expanded(
+                            child: Text(
+                              problem.title,
+                              style: const TextStyle(fontSize: 16),
+                            ),
+                          ),
+                          AnimatedRotation(
+                            turns: _open == code ? 0.5 : 0,
+                            duration: const Duration(milliseconds: 200),
+                            child: Icon(
+                              Icons.expand_more_rounded,
+                              color: colors.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                  const SizedBox(height: 6),
-                  _Fix(problem),
-                ],
-              ),
-            ),
+                ),
+                AnimatedSize(
+                  duration: const Duration(milliseconds: 200),
+                  alignment: Alignment.topCenter,
+                  child: _open == code
+                      ? Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+                          child: _Fix(problem),
+                        )
+                      : const SizedBox(width: double.infinity),
+                ),
+              ],
+            ],
           ),
+        ),
       ],
     );
   }
