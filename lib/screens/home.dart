@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../mail/mail.dart';
 import '../mail/mail_account.dart';
@@ -77,6 +78,8 @@ class _HomeScreenState extends State<HomeScreen> {
       state.addListener(_rebuild);
     }
     _speech.onSpeech = _checkCommand;
+    _speech.addListener(_keepAwake);
+    Reader.instance.speaking.addListener(_keepAwake);
     _tickClock();
     // Desktop starts with mail only: no recogniser, no model downloads.
     if (!isDesktop) _init();
@@ -89,6 +92,26 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _rebuild() => setState(() {});
+
+  Timer? _sleep;
+  bool _awake = false;
+
+  /// Keeps the screen on while the mic listens or a mail is read aloud:
+  /// voice use has no touches, so the phone took it for idle. The phone's
+  /// own timeout counts from the last touch, so letting go at once could
+  /// blank the screen in the short gap between a question and listening.
+  void _keepAwake() {
+    if (_speech.listening || Reader.instance.speaking.value) {
+      _sleep?.cancel();
+      _sleep = null;
+      // The recogniser notifies on every partial word; enable just once.
+      if (!_awake) WakelockPlus.enable();
+      _awake = true;
+    } else if (_awake) {
+      _awake = false;
+      _sleep ??= Timer(const Duration(seconds: 30), WakelockPlus.disable);
+    }
+  }
 
   Future<void> _init() async {
     // A downloader that fails to start still leaves the models on the phone
@@ -126,6 +149,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    Reader.instance.speaking.removeListener(_keepAwake);
+    _sleep?.cancel();
+    WakelockPlus.disable();
     _speech.dispose();
     _downloads.dispose();
     _clock?.cancel();
