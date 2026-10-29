@@ -197,12 +197,15 @@ class Summarizer {
   }
 
   static String _prompt(Mail mail) {
-    final body = mail.body.length > _maxBody
-        ? '${mail.body.substring(0, _maxBody)}…'
-        : mail.body;
+    // Links mean nothing read aloud and cost tokens, so the model never sees them.
+    final text = mail.body.replaceAll(RegExp(r'(https?://|www\.)\S+'), '');
+    final body = text.length > _maxBody
+        ? '${text.substring(0, _maxBody)}…'
+        : text;
     return '다음 메일을 한국어 2~3문장으로 요약해 주세요. '
         '소리 내어 읽어 줄 글이니 목록 기호나 마크다운 없이 자연스러운 문장으로 쓰고, '
-        '누가 무엇을 원하는지와 날짜·마감·금액이 있으면 꼭 넣어 주세요.\n\n'
+        '누가 보냈는지, 왜 보냈는지, 핵심 내용 순서로 써 주세요. '
+        '날짜·마감·금액이 있으면 꼭 넣고, 링크·웹 주소·수신 거부 안내는 빼 주세요.\n\n'
         '보낸 사람: ${mail.from}\n제목: ${mail.subject}\n\n$body';
   }
 }

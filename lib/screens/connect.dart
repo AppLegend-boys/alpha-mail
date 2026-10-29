@@ -45,18 +45,7 @@ class MailProviderScreen extends StatelessWidget {
             ).showSnackBar(SnackBar(content: Text('$name 연동은 곧 지원할 예정이에요'))),
         child: Row(
           children: [
-            CircleAvatar(
-              radius: 20,
-              backgroundColor: markColor,
-              child: Text(
-                mark,
-                style: const TextStyle(
-                  fontSize: 17,
-                  fontWeight: FontWeight.w900,
-                  color: Colors.white,
-                ),
-              ),
-            ),
+            ServiceBadge(mark, markColor, size: 40),
             const SizedBox(width: 14),
             Expanded(
               child: Column(
@@ -102,6 +91,7 @@ class MailProviderScreen extends StatelessWidget {
         for (final (service, sub) in [
           (MailService.naver, '아이디와 애플리케이션 비밀번호로 연결해요'),
           (MailService.gmail, '구글 계정으로 로그인해서 연결해요'),
+          (MailService.outlook, '마이크로소프트 계정으로 로그인해서 연결해요'),
         ])
           provider(
             service.label,
@@ -128,14 +118,13 @@ class MailProviderScreen extends StatelessWidget {
             ),
             linked: accounts.any((a) => a.service == service),
           ),
-        provider('Outlook', 'O', const Color(0xff0078d4), '마이크로소프트 계정으로 연결해요'),
       ],
     );
   }
 }
 
 /// Signs in to one mail service over IMAP: Naver with an app password,
-/// Gmail with Google sign-in. The password or token stays in the keychain.
+/// Gmail and Outlook with their own sign-in. The password or token stays in the keychain.
 /// Linking an address again replaces its saved login.
 class MailConnectScreen extends StatefulWidget {
   const MailConnectScreen({
@@ -189,7 +178,7 @@ class _MailConnectScreenState extends State<MailConnectScreen> {
     try {
       final account = naver
           ? MailAccount(_id.text, _password.text)
-          : await MailAccount.signInWithGoogle();
+          : await MailAccount.signIn(widget.service);
       // Fetching doubles as the login check.
       final unread = await account.fetchUnread();
       await widget.onAdded(account, unread);
@@ -324,7 +313,7 @@ class _MailConnectScreenState extends State<MailConnectScreen> {
           const SizedBox(height: 24),
         ] else ...[
           Text(
-            '버튼을 누르면 구글 로그인 화면이 열려요. '
+            '버튼을 누르면 ${service == MailService.outlook ? '마이크로소프트' : '구글'} 로그인 화면이 열려요. '
             '계정을 고르고 메일 접근을 허용하면 바로 연결돼요. '
             '앱 비밀번호나 IMAP 설정은 필요 없어요.',
             style: hint.copyWith(height: 1.6),
@@ -382,13 +371,20 @@ class _MailConnectScreenState extends State<MailConnectScreen> {
                   dimension: 22,
                   child: CircularProgressIndicator(strokeWidth: 2.5),
                 )
-              : Text(naver ? '연결하기' : 'Google로 로그인'),
+              : Text(switch (service) {
+                  MailService.naver => '연결하기',
+                  MailService.gmail => 'Google로 로그인',
+                  MailService.outlook => 'Microsoft로 로그인',
+                }),
         ),
         const SizedBox(height: 14),
         Text(
           naver
               ? '비밀번호는 이 기기의 보안 저장소에만 저장돼요.\n'
                     '메일은 다른 서버를 거치지 않고 네이버와 직접 주고받아요.'
+              : service == MailService.outlook
+              ? '마이크로소프트 비밀번호는 앱이 보지 않아요. 마이크로소프트가 준 접근 권한만\n'
+                    '이 기기의 보안 저장소에 저장하고, 메일은 마이크로소프트와 직접 주고받아요.'
               : '구글 비밀번호는 앱이 보지 않아요. 구글이 준 접근 권한만\n'
                     '이 기기의 보안 저장소에 저장하고, 메일은 구글과 직접 주고받아요.',
           textAlign: TextAlign.center,

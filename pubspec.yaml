@@ -72,6 +72,7 @@ flutter:
     - assets/models/vad/silero_vad.onnx
     - assets/fonts/OFL.txt
     - assets/brand/logo-horizontal.png
+    - assets/brand/logo-horizontal-accent.png
   fonts:
     # Transcript serif (OFL, assets/fonts/OFL.txt).
     - family: GowunBatang

@@ -11,11 +11,19 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'mail.dart';
 
 /// Mail services the app can read over IMAP. Naver takes an app password,
-/// which needs two-step login turned on; Gmail takes Google sign-in.
+/// which needs two-step login turned on; Gmail and Outlook take OAuth.
 enum MailService {
   naver('네이버 메일', 'N', Color(0xff03c75a), 'imap.naver.com', 'smtp.naver.com'),
   // Gmail keeps IMAP always on since 2025, so there is no setting to flip.
-  gmail('Gmail', 'G', Color(0xffea4335), 'imap.gmail.com', 'smtp.gmail.com');
+  gmail('Gmail', 'G', Color(0xffea4335), 'imap.gmail.com', 'smtp.gmail.com'),
+  // Outlook.com and Microsoft 365 alike; its SMTP only takes STARTTLS on 587.
+  outlook(
+    'Outlook',
+    'O',
+    Color(0xff0078d4),
+    'outlook.office365.com',
+    'smtp-mail.outlook.com',
+  );
 
   const MailService(this.label, this.mark, this.color, this.host, this.smtp);
 
@@ -28,8 +36,10 @@ enum MailService {
   final Color color;
   final String host;
 
-  /// Server mail is sent through, over SSL on port 465.
+  /// Server mail is sent through, over SSL on port 465 (Outlook: 587).
   final String smtp;
+
+  bool get usesOAuth => this != naver;
 }
 
 // iOS-type OAuth client from Google Cloud Console, used on every platform:
@@ -45,7 +55,34 @@ const _google = AuthorizationServiceConfiguration(
 );
 // Full mail access is the only scope IMAP accepts.
 const _googleScopes = ['openid', 'email', 'https://mail.google.com/'];
+
+// Public client from an Azure app registration ("Mobile and desktop" platform,
+// redirect URI below, any Microsoft account). Not a secret; PKCE.
+// ponytail: empty until the app is registered; Outlook sign-in fails clearly.
+const microsoftClientId = '';
+// Also set in ios/Runner/Info.plist and the RedirectUriReceiverActivity
+// intent filter in android/app/src/main/AndroidManifest.xml.
+const _microsoftRedirect = 'com.applegend.alphamail://oauthredirect';
+const _microsoft = AuthorizationServiceConfiguration(
+  authorizationEndpoint:
+      'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
+  tokenEndpoint: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+);
+const _microsoftScopes = [
+  'openid',
+  'email',
+  'offline_access',
+  'https://outlook.office.com/IMAP.AccessAsUser.All',
+  'https://outlook.office.com/SMTP.Send',
+];
 const _appAuth = FlutterAppAuth();
+
+/// Client ID, redirect, endpoints and scopes for an OAuth service.
+(String, String, AuthorizationServiceConfiguration, List<String>) _oauth(
+  MailService service,
+) => service == MailService.outlook
+    ? (microsoftClientId, _microsoftRedirect, _microsoft, _microsoftScopes)
+    : (googleClientId, _googleRedirect, _google, _googleScopes);
 
 /// An inbox's unread count and the newest of those mails.
 typedef Unread = ({int total, List<Mail> mails});
@@ -61,51 +98,74 @@ class MailAccount {
   /// A Gmail account and the refresh token Google sign-in gave it.
   MailAccount.google(this.address, this.secret) : service = MailService.gmail;
 
+  /// An Outlook account and the refresh token Microsoft sign-in gave it.
+  MailAccount.outlook(this.address, this.secret)
+    : service = MailService.outlook;
+
   final MailService service;
 
   /// Full address, also the Gmail login. Any domain for Gmail (Workspace).
   final String address;
 
-  /// Naver's app password or Gmail's refresh token.
-  final String secret;
+  /// Naver's app password, or the OAuth refresh token. Microsoft hands out
+  /// a new refresh token on each use, so this can change ([onRenewed]).
+  String secret;
+
+  /// Called after [secret] changes, to save the new one.
+  static void Function()? onRenewed;
 
   String get id => address.split('@').first;
 
-  /// Opens Google's sign-in page and returns the account it granted.
-  /// Throws [FlutterAppAuthUserCancelledException] if the user backs out.
-  static Future<MailAccount> signInWithGoogle() async {
+  /// Opens Google's or Microsoft's sign-in page and returns the account it
+  /// granted. Throws [FlutterAppAuthUserCancelledException] if the user
+  /// backs out.
+  static Future<MailAccount> signIn(MailService service) async {
+    final (clientId, redirect, config, scopes) = _oauth(service);
+    if (clientId.isEmpty) throw StateError('no $service client ID');
     final result = await _appAuth.authorizeAndExchangeCode(
       AuthorizationTokenRequest(
-        googleClientId,
-        _googleRedirect,
-        serviceConfiguration: _google,
-        scopes: _googleScopes,
+        clientId,
+        redirect,
+        serviceConfiguration: config,
+        scopes: scopes,
         // Always show the account picker, so switching accounts works.
         promptValues: ['select_account'],
       ),
     );
-    // The ID token came straight from Google over TLS, so its payload can
-    // be read without checking the signature.
+    // The ID token came straight from the provider over TLS, so its payload
+    // can be read without checking the signature.
     final payload = result.idToken!.split('.')[1];
-    final {'email': String email} =
+    final claims =
         jsonDecode(utf8.decode(base64Url.decode(base64Url.normalize(payload))))
             as Map<String, dynamic>;
-    return MailAccount.google(email, result.refreshToken!);
+    // Personal Microsoft accounts may leave out email; the login name is
+    // the address then.
+    final email = (claims['email'] ?? claims['preferred_username']) as String;
+    return service == MailService.outlook
+        ? MailAccount.outlook(email, result.refreshToken!)
+        : MailAccount.google(email, result.refreshToken!);
   }
 
-  /// Trades Gmail's refresh token for a fresh hour-long access token.
+  /// Trades the refresh token for a fresh hour-long access token.
   Future<String> _accessToken() async {
+    final (clientId, redirect, config, scopes) = _oauth(service);
     final token = await _appAuth
         .token(
           TokenRequest(
-            googleClientId,
-            _googleRedirect,
-            serviceConfiguration: _google,
+            clientId,
+            redirect,
+            serviceConfiguration: config,
             refreshToken: secret,
+            // Microsoft wants the scopes again on refresh.
+            scopes: service == MailService.outlook ? scopes : null,
           ),
         )
         // Seen to never answer after the app was started on a locked phone.
         .timeout(const Duration(seconds: 20));
+    if (token.refreshToken case final renewed? when renewed != secret) {
+      secret = renewed;
+      onRenewed?.call();
+    }
     return token.accessToken!;
   }
 
@@ -114,7 +174,7 @@ class MailAccount {
     switch (service) {
       case MailService.naver:
         await client.login(id, secret);
-      case MailService.gmail:
+      case MailService.gmail || MailService.outlook:
         await client.authenticateWithOAuth2(address, await _accessToken());
     }
   }
@@ -141,12 +201,18 @@ class MailAccount {
     }
     final client = SmtpClient(service.smtp);
     Future<void> deliver() async {
-      await client.connectToServer(service.smtp, 465);
+      final ssl = service != MailService.outlook;
+      await client.connectToServer(
+        service.smtp,
+        ssl ? 465 : 587,
+        isSecure: ssl,
+      );
       await client.ehlo();
+      if (!ssl) await client.startTls();
       switch (service) {
         case MailService.naver:
           await client.authenticate(id, secret, AuthMechanism.login);
-        case MailService.gmail:
+        case MailService.gmail || MailService.outlook:
           await client.authenticate(
             address,
             await _accessToken(),
@@ -170,7 +236,8 @@ class MailAccount {
   }
 
   /// Tells Google to drop the app's access. Best effort: the user can also
-  /// remove it at myaccount.google.com/permissions.
+  /// remove it at myaccount.google.com/permissions. Microsoft has no revoke
+  /// endpoint for one token; account.live.com/consent/Manage removes it.
   Future<void> revoke() async {
     if (service != MailService.gmail) return;
     final client = HttpClient();
@@ -217,6 +284,8 @@ class MailAccount {
   static MailAccount? fromJson(dynamic json) => switch (json) {
     {'service': 'gmail', 'address': String address, 'secret': String token} =>
       MailAccount.google(address, token),
+    {'service': 'outlook', 'address': String address, 'secret': String token} =>
+      MailAccount.outlook(address, token),
     {'address': String address, 'secret': String password} => MailAccount(
       address,
       password,
@@ -276,10 +345,6 @@ class MailAccount {
   Future<void> markSeen(int uid) => _inInbox(
     (client, _) => client.uidMarkSeen(MessageSequence.fromId(uid, isUid: true)),
   );
-
-  /// Marks every inbox mail read, not just the ones the app fetched.
-  Future<void> markAllSeen() =>
-      _inInbox((client, _) => client.markSeen(MessageSequence.fromAll()));
 
   /// The newest [limit] inbox (or [sent]) mails, read or not, newest first;
   /// with [before], the ones older than that UID (더 보기).
@@ -395,7 +460,12 @@ class MailAccount {
 /// Plain Korean message for a failed connect, for the connect screen.
 String mailError(MailService service, Object error) => switch (error) {
   SocketException() || TimeoutException() => '인터넷 연결을 확인해 주세요.',
-  FlutterAppAuthUserCancelledException() => '구글 로그인을 취소했어요.',
+  FlutterAppAuthUserCancelledException() => switch (service) {
+    MailService.outlook => '마이크로소프트 로그인을 취소했어요.',
+    _ => '구글 로그인을 취소했어요.',
+  },
+  StateError() when service == MailService.outlook =>
+    '아직 Outlook 연동을 준비 중이에요. 앱에 마이크로소프트 앱 등록이 필요해요.',
   ImapException() ||
   SmtpException() ||
   FlutterAppAuthPlatformException() => switch (service) {
@@ -405,6 +475,9 @@ String mailError(MailService service, Object error) => switch (error) {
     MailService.gmail =>
       '구글 로그인에 실패했어요. 다시 연결해 주세요. '
           '회사·학교 계정은 관리자가 외부 앱의 메일 접근을 막아 두었을 수 있어요.',
+    MailService.outlook =>
+      '마이크로소프트 로그인에 실패했어요. 다시 연결해 주세요. '
+          '회사·학교 계정은 관리자가 IMAP·SMTP 접근을 막아 두었을 수 있어요.',
   },
   _ => '${service.label}에 연결하지 못했어요. 잠시 후 다시 시도해 주세요.',
 };

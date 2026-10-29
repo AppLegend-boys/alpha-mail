@@ -27,8 +27,9 @@ SendAnswer sendAnswer(String said) => _no.hasMatch(said)
     : SendAnswer.unclear;
 
 /// The address of whoever [said] names: a spoken address ("minji 골뱅이
-/// 네이버 닷 컴") or, from [contacts] (name → address), a name.
-String? findRecipient(String said, Map<String, String> contacts) {
+/// 네이버 닷 컴") or, from [contacts] (name → address), a name. "나한테" or
+/// "내게" is [me], the account the mail goes from.
+String? findRecipient(String said, Map<String, String> contacts, {String? me}) {
   var spoken = said.toLowerCase();
   for (final (word, text) in [
     (RegExp(r'골뱅이|앳'), '@'),
@@ -51,6 +52,7 @@ String? findRecipient(String said, Map<String, String> contacts) {
       .replaceAll(RegExp(r'[\s.,!?]'), '')
       .replaceAll(RegExp(r'(님|씨|께|에게|한테|요)+$'), '');
   final name = bare(said);
+  if (const {'나', '저', '내게', '제게', '나자신'}.contains(name)) return me;
   if (name.length < 2) return null;
   for (final MapEntry(key: contact, value: address) in contacts.entries) {
     final known = bare(contact);
@@ -184,7 +186,13 @@ class _ComposeScreenState extends State<ComposeScreen> {
     final s = _speech;
     if (s == null || s.onSpeech != _onSpeech) return;
     s.onSpeech = _homeOnSpeech;
-    if (s.listening) s.toggleListening();
+    // Home shows whatever is in heard as its own bubble, so leave it empty;
+    // after the stop, which would otherwise set "잘 듣지 못했어요".
+    if (s.listening) {
+      s.toggleListening().whenComplete(() => s.clear(dropPending: true));
+    } else {
+      s.clear(dropPending: true);
+    }
   }
 
   Future<void> _mute() async {
@@ -306,7 +314,8 @@ class _ComposeScreenState extends State<ComposeScreen> {
   }
 
   void _name(String said) {
-    if (findRecipient(said, widget.contacts) case final address?) {
+    if (findRecipient(said, widget.contacts, me: _sender?.address)
+        case final address?) {
       _to.text = address;
       _asked = 0;
       _confirm();
@@ -333,6 +342,11 @@ class _ComposeScreenState extends State<ComposeScreen> {
       _step = _Step.idle;
       _note = note;
     });
+  }
+
+  /// Typing fixes what the note complained about, so it goes.
+  void _edited(String _) {
+    if (_note != null) setState(() => _note = null);
   }
 
   /// [_stop], saying why aloud: the user may not be looking.
@@ -393,7 +407,7 @@ class _ComposeScreenState extends State<ComposeScreen> {
   (String, String)? get _status => switch (_step) {
     _Step.talking => ('잠시만요', '안내가 끝나면 말씀해 주세요'),
     _Step.dictating => ('듣고 있어요', '다 말씀하시고 잠시 멈추면 읽어 드려요'),
-    _Step.naming => ('누구에게 보낼까요?', '이름이나 메일 주소를 말씀해 주세요'),
+    _Step.naming => ('누구에게 보낼까요?', '이름, 메일 주소, 또는 "나한테"'),
     _Step.confirming => ('보낼까요?', '"보내", "다시", "취소"로 말씀해 주세요'),
     _Step.sending => ('보내는 중이에요', _to.text.trim()),
     _Step.idle => switch (_note) {
@@ -486,12 +500,18 @@ class _ComposeScreenState extends State<ComposeScreen> {
               controller: _to,
               style: text,
               keyboardType: TextInputType.emailAddress,
+              onChanged: _edited,
               decoration: bare.copyWith(hintText: '메일 주소'),
             ),
           ),
           (
             '제목',
-            TextField(controller: _subject, style: text, decoration: bare),
+            TextField(
+              controller: _subject,
+              style: text,
+              onChanged: _edited,
+              decoration: bare,
+            ),
           ),
         ]) ...[
           Padding(
@@ -520,6 +540,7 @@ class _ComposeScreenState extends State<ComposeScreen> {
           minLines: 8,
           maxLines: null,
           keyboardType: TextInputType.multiline,
+          onChanged: _edited,
           style: const TextStyle(fontSize: 17, height: 1.6),
           decoration: bare.copyWith(hintText: '내용을 입력하세요'),
         ),

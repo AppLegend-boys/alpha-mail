@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:alpha_mail/voice/speech.dart';
 import 'package:alpha_mail/mail/mail_account.dart';
 import 'package:alpha_mail/screens/compose.dart';
+import 'package:alpha_mail/screens/mail_view.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -54,6 +55,16 @@ void main() {
     expect(sendAnswer('음'), SendAnswer.unclear);
   });
 
+  test('only a bare "다음" skips to the next mail', () {
+    expect(isSkipCommand('다음'), isTrue);
+    expect(isSkipCommand('다음.'), isTrue);
+    expect(isSkipCommand('다음 거'), isTrue);
+    expect(isSkipCommand('넘겨 줘'), isTrue);
+    // The app's own voice or mail text read aloud.
+    expect(isSkipCommand('다음 주 월요일까지 제출해 주세요'), isFalse);
+    expect(isSkipCommand('다음 메일입니다'), isFalse);
+  });
+
   test('a recipient can be named or spelled aloud', () {
     const contacts = {'허재혁': 'jh@manyfast.io', '토스뱅크': 'no-reply@toss.im'};
     expect(findRecipient('허재혁 님에게요.', contacts), 'jh@manyfast.io');
@@ -65,6 +76,12 @@ void main() {
     );
     expect(findRecipient('김철수', contacts), isNull);
     expect(findRecipient('어', contacts), isNull);
+    // To oneself: the account the mail goes from.
+    const me = 'gunwoo405@naver.com';
+    expect(findRecipient('나한테', contacts, me: me), me);
+    expect(findRecipient('내게요.', contacts, me: me), me);
+    expect(findRecipient('나에게', contacts, me: me), me);
+    expect(findRecipient('나한테', contacts), isNull);
   });
 
   test('htmlToText keeps line breaks and drops markup', () {
@@ -96,6 +113,15 @@ void main() {
       'secret': 'token',
     })!;
     expect((gmail.service, gmail.secret), (MailService.gmail, 'token'));
+    final outlook = MailAccount.fromJson({
+      'service': 'outlook',
+      'address': 'minji@outlook.com',
+      'secret': 'token',
+    })!;
+    expect(
+      (outlook.service, outlook.address),
+      (MailService.outlook, 'minji@outlook.com'),
+    );
     expect(MailAccount.fromJson({'nope': 1}), isNull);
   });
 }

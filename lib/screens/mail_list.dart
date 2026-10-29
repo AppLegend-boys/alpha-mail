@@ -7,7 +7,6 @@ import '../mail/mail.dart';
 import '../mail/mail_account.dart';
 import '../voice/speech.dart';
 import '../widgets.dart';
-import 'compose.dart';
 import 'mail_view.dart';
 import 'settings.dart';
 
@@ -22,7 +21,6 @@ class MailFolderScreen extends StatefulWidget {
     this.only,
     this.limit = 20,
     this.onRead,
-    this.onAllRead,
     this.onOpenAll,
     this.speech,
   });
@@ -43,9 +41,6 @@ class MailFolderScreen extends StatefulWidget {
   /// Called once an unread mail opened from here is marked read.
   final void Function(Mail)? onRead;
 
-  /// Called once every inbox mail of the account is marked read.
-  final void Function(MailAccount)? onAllRead;
-
   /// Opens 전체 메일, for [only] that account when given; the unread list
   /// links there at its end.
   final void Function(MailAccount? only)? onOpenAll;
@@ -62,12 +57,8 @@ class _MailFolderScreenState extends State<MailFolderScreen> {
   /// Unread folder: the inbox's whole unread count per account.
   final _totals = <String, int>{};
 
-  /// Accounts whose unread were all marked read here.
-  final _allRead = <String>{};
-
   /// (address, UID) of mails read since the list opened.
   final _read = <(String, int)>{};
-  bool _marking = false;
 
   /// Accounts whose last page came back full, so older mail may be left.
   final _more = <String>{};
@@ -80,26 +71,6 @@ class _MailFolderScreenState extends State<MailFolderScreen> {
       _fetch(account);
     }
   }
-
-  /// Opens 메일 작성; [byVoice] starts with dictating the body.
-  void _write({bool byVoice = false}) => Navigator.push(
-    context,
-    MaterialPageRoute(
-      builder: (_) => ComposeScreen(
-        from: [...widget.from, widget.folder.label],
-        accounts: widget.accounts,
-        account: widget.accounts.where((a) => a.address == _only).firstOrNull,
-        speech: widget.speech,
-        byVoice: byVoice,
-        // Everyone in the list, so a recipient can be named aloud.
-        contacts: {
-          for (final m in _list.reversed)
-            if (m.address.isNotEmpty)
-              m.from.replaceAll(RegExp(r'에게$'), ''): m.address,
-        },
-      ),
-    ),
-  );
 
   /// Fetches the newest page, or with [before] the page older than that UID
   /// added to the end.
@@ -169,9 +140,10 @@ class _MailFolderScreenState extends State<MailFolderScreen> {
 
   bool _isRead(Mail mail) => switch (mail) {
     Mail(seen: true) => true,
-    Mail(:final account?, :final uid?) =>
-      _allRead.contains(account.address) ||
-          _read.contains((account.address, uid)),
+    Mail(:final account?, :final uid?) => _read.contains((
+      account.address,
+      uid,
+    )),
     _ => false,
   };
 
@@ -179,59 +151,9 @@ class _MailFolderScreenState extends State<MailFolderScreen> {
       ? mockMails.length
       : [
           for (final a in _shown)
-            if (!_allRead.contains(a.address))
-              (_totals[a.address] ?? 0) -
-                  (_mails[a.address] ?? const []).where(_isRead).length,
+            (_totals[a.address] ?? 0) -
+                (_mails[a.address] ?? const []).where(_isRead).length,
         ].fold(0, (sum, n) => sum + n);
-
-  Future<void> _markAll() async {
-    final accounts = [
-      for (final a in _shown)
-        if (_mails.containsKey(a.address) && !_allRead.contains(a.address)) a,
-    ];
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('모두 읽음으로 표시할까요?'),
-        content: Text(
-          '${accounts.map((a) => a.address).join(', ')}의 안 읽은 메일 '
-          '$_left건이 메일함에서도 읽음으로 바뀌어요.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('취소'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('모두 읽음'),
-          ),
-        ],
-      ),
-    );
-    if (ok != true) return;
-    setState(() => _marking = true);
-    await Future.wait([
-      for (final account in accounts)
-        account.markAllSeen().then(
-          (_) {
-            if (mounted) setState(() => _allRead.add(account.address));
-            widget.onAllRead?.call(account);
-          },
-          onError: (Object error) {
-            if (!mounted) return;
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(
-                  '${account.address}: ${mailError(account.service, error)}',
-                ),
-              ),
-            );
-          },
-        ),
-    ]);
-    if (mounted) setState(() => _marking = false);
-  }
 
   void _onRead(Mail mail) {
     if (mounted) setState(() => _read.add((mail.account!.address, mail.uid!)));
@@ -253,13 +175,6 @@ class _MailFolderScreenState extends State<MailFolderScreen> {
     final unread = widget.folder == MailFolder.unread;
     return AppPage(
       trail: [...widget.from, widget.folder.label],
-      floating: WritePill(
-        '메일 작성',
-        onWrite: _write,
-        onVoice: widget.speech?.loaded == true
-            ? () => _write(byVoice: true)
-            : null,
-      ),
       children: [
         ScreenTitle(switch (accounts) {
           [] => '예시 메일',
@@ -273,47 +188,30 @@ class _MailFolderScreenState extends State<MailFolderScreen> {
         Row(
           children: [
             Expanded(
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  if (accounts.length > 1)
-                    for (final a in [null, ...accounts])
-                      ChoiceChip(
-                        // The service's badge says which account; a tick
-                        // would only repeat the chip's selected fill.
-                        showCheckmark: false,
-                        avatar: a == null
-                            ? null
-                            : CircleAvatar(
-                                backgroundColor: a.service.color,
-                                child: Text(
-                                  a.service.mark,
-                                  style: const TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w900,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                              ),
-                        label: Text(a == null ? '전체 계정' : _name(a)),
-                        selected: _only == a?.address,
-                        onSelected: (_) => setState(() => _only = a?.address),
-                      ),
-                ],
+              // One line that scrolls sideways, so more accounts don't push
+              // the mails down.
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  spacing: 8,
+                  children: [
+                    if (accounts.length > 1)
+                      for (final a in [null, ...accounts])
+                        ChoiceChip(
+                          // The service's badge says which account; a tick
+                          // would only repeat the chip's selected fill.
+                          showCheckmark: false,
+                          avatar: a == null
+                              ? null
+                              : ServiceBadge(a.service.mark, a.service.color),
+                          label: Text(a == null ? '전체 계정' : _name(a)),
+                          selected: _only == a?.address,
+                          onSelected: (_) => setState(() => _only = a?.address),
+                        ),
+                  ],
+                ),
               ),
             ),
-            if (unread && accounts.isNotEmpty)
-              TextButton.icon(
-                onPressed: _marking || _loading || _left <= 0 ? null : _markAll,
-                icon: _marking
-                    ? const SizedBox.square(
-                        dimension: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.done_all_rounded),
-                label: const Text('모두 읽음'),
-              ),
           ],
         ),
         const SizedBox(height: 14),
@@ -443,8 +341,26 @@ class MailTile extends StatelessWidget {
                     ),
                   ),
                 ),
+                // The badge stands for the service's name; example mails
+                // have no account, so they keep the name as text.
+                if (mail.account?.service case final service?
+                    when showSource) ...[
+                  Semantics(
+                    label: service.label,
+                    child: ExcludeSemantics(
+                      child: ServiceBadge(
+                        service.mark,
+                        service.color,
+                        size: 14,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                ],
                 Text(
-                  showSource ? '${mail.source} · $when' : when,
+                  showSource && mail.account == null
+                      ? '${mail.source} · $when'
+                      : when,
                   style: TextStyle(
                     fontSize: 13,
                     color: colors.onSurfaceVariant,

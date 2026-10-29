@@ -47,6 +47,8 @@ class MailInbox extends ChangeNotifier with SafeNotifier {
   /// Throws when the saved accounts can't be read.
   Future<void> load() async {
     accounts = await MailAccount.loadAll();
+    // Keep Microsoft's rotated refresh tokens, or Outlook logs out in 90 days.
+    MailAccount.onRenewed = () => MailAccount.saveAll(accounts);
     notifyListeners();
     await refresh();
   }
@@ -114,12 +116,6 @@ class MailInbox extends ChangeNotifier with SafeNotifier {
         if (m.uid != mail.uid) m,
     ];
     unreadTotal.update(address, (n) => n - 1);
-    notifyListeners();
-  }
-
-  void allRead(MailAccount account) {
-    unread[account.address] = [];
-    unreadTotal[account.address] = 0;
     notifyListeners();
   }
 

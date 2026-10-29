@@ -13,6 +13,32 @@ final isDesktop = Platform.isMacOS || Platform.isWindows || Platform.isLinux;
 /// First crumb of every menu path, named after what home is on this device.
 final homeLabel = isDesktop ? '메일 홈' : '홈';
 
+/// A mail service's one-letter badge: white letter on its brand colour.
+class ServiceBadge extends StatelessWidget {
+  const ServiceBadge(this.mark, this.color, {super.key, this.size = 24});
+  final String mark;
+  final Color color;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: size,
+    height: size,
+    alignment: Alignment.center,
+    decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+    child: Text(
+      mark,
+      style: TextStyle(
+        // Small badges need a relatively bigger letter to stay legible.
+        fontSize: size < 20 ? size * 0.65 : size * 0.45,
+        height: 1,
+        fontWeight: FontWeight.w900,
+        color: Colors.white,
+      ),
+    ),
+  );
+}
+
 /// Rounded dark card with a hairline border, the base of every block.
 class VoiceCard extends StatelessWidget {
   const VoiceCard({
@@ -134,7 +160,14 @@ class _AppPageState extends State<AppPage> {
     child: GestureDetector(
       onHorizontalDragEnd: Platform.isIOS ? null : _onSwipe,
       child: Scaffold(
-        appBar: AppBar(titleSpacing: 0, title: _Trail(widget.trail)),
+        // Shorter than the default 56 so the back button and path sit as
+        // high as the home's logo row.
+        appBar: AppBar(
+          toolbarHeight: 48,
+          leadingWidth: 48,
+          titleSpacing: 0,
+          title: _Trail(widget.trail),
+        ),
         body: SafeArea(
           top: false,
           // Desktop windows: keep the column readable instead of edge to edge.
@@ -184,12 +217,17 @@ class _Trail extends StatelessWidget {
               ),
             Flexible(
               child: i == trail.length - 1
-                  ? Text(
-                      crumb,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
+                  // Same side padding as the crumb buttons, so the gaps
+                  // around each › match.
+                  ? Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 6),
+                      child: Text(
+                        crumb,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                        ),
                       ),
                     )
                   : TextButton(
@@ -200,7 +238,9 @@ class _Trail extends StatelessWidget {
                       style: TextButton.styleFrom(
                         foregroundColor: colors.onSurfaceVariant,
                         padding: const EdgeInsets.symmetric(horizontal: 6),
-                        minimumSize: const Size(0, 36),
+                        minimumSize: const Size(0, 40),
+                        // The 48 tap target widened short crumbs like "홈".
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                         textStyle: const TextStyle(fontSize: 15),
                       ),
                       child: Text(crumb, overflow: TextOverflow.ellipsis),
@@ -343,16 +383,21 @@ mixin SafeNotifier on ChangeNotifier {
 }
 
 /// Logo lockup, shared by the home bar and the drawer.
+/// The symbol's drop of blue: "mail" in the logo and the unread count.
+const accent = Color(0xff1d5bd6);
+
+/// Light blue for the mic icon on black.
+const voiceBlue = Color(0xff8db4ff);
+
 class Brand extends StatelessWidget {
   const Brand({super.key});
 
-  // Lockup from design/logo (export/horizontal, mono #A8F5D0), tinted to
-  // the symbol colour.
+  // Lockup from design/logo, black "alpha-" and [accent] "mail", as in the
+  // blue-accent drafts.
   @override
   Widget build(BuildContext context) => Image.asset(
-    'assets/brand/logo-horizontal.png',
+    'assets/brand/logo-horizontal-accent.png',
     height: 34,
-    color: Theme.of(context).colorScheme.primary,
     // The 600×160 source shrinks ~2–5×; the default low filter skips pixels
     // at that ratio and left the curves jagged. Medium samples mipmaps.
     filterQuality: FilterQuality.medium,

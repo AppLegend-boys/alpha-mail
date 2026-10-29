@@ -264,6 +264,9 @@ class Recognizer extends ChangeNotifier with SafeNotifier {
 
   bool get loaded => _offline != null;
 
+  /// Whether the mic may be used, without asking for it.
+  Future<bool> get micAllowed => _recorder.hasPermission(request: false);
+
   /// The VAD hears speech right now, mid-sentence.
   bool get hearing => _vad?.isDetected() ?? false;
 
@@ -443,14 +446,19 @@ class Recognizer extends ChangeNotifier with SafeNotifier {
   }
 
   /// Back to the resting home after a command was handled.
-  void clear() {
+  /// [dropPending] also discards sentences still being written, so a screen
+  /// handing the mic back leaves nothing to arrive later.
+  void clear({bool dropPending = false}) {
+    if (dropPending) _session++;
     heard = '';
     partial = '';
     status = '말할 준비가 됐어요';
     notifyListeners();
   }
 
-  Future<void> toggleListening() async {
+  /// [echoCancel] filters out the phone's own speaker, for listening while
+  /// the app reads aloud.
+  Future<void> toggleListening({bool echoCancel = false}) async {
     if (busy) return;
     if (listening) {
       await _audioSub?.cancel();
@@ -475,10 +483,12 @@ class Recognizer extends ChangeNotifier with SafeNotifier {
         return notifyListeners();
       }
       final audio = await _recorder.startStream(
-        const RecordConfig(
+        RecordConfig(
           encoder: AudioEncoder.pcm16bits,
           sampleRate: 16000,
           numChannels: 1,
+          echoCancel: echoCancel,
+          noiseSuppress: echoCancel,
         ),
       );
       listening = true;

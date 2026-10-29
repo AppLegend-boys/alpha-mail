@@ -77,6 +77,8 @@
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>com.googleusercontent.apps.452100579076-7eh0ik6r8f41cp5pmvh770b0ke2q7ju1</string>
+				<!-- Microsoft sign-in redirect: _microsoftRedirect in lib/mail/mail_account.dart. -->
+				<string>com.applegend.alphamail</string>
 			</array>
 		</dict>
 	</array>

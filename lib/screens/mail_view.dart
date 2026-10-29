@@ -10,9 +10,16 @@ import '../voice/speech.dart';
 import '../mail/summary.dart';
 import '../voice/tts.dart';
 import '../widgets.dart';
-import 'compose.dart';
 
 /// 03 — reads one unread mail aloud, with a waveform while it plays.
+/// Whether [said] asks to skip to the next mail. Only a bare "다음" counts:
+/// the mic also catches the app's own voice and mail text like "다음 주
+/// 월요일까지".
+bool isSkipCommand(String said) => _skip.hasMatch(said);
+final _skip = RegExp(
+  r'^\s*(다음|다음 거|다음 꺼|다음 메일|넘겨|넘어가|건너뛰어)\s*(줘|요)?\s*[.!?]?\s*$',
+);
+
 class BriefingScreen extends StatefulWidget {
   const BriefingScreen({
     super.key,
@@ -60,12 +67,16 @@ class _BriefingScreenState extends State<BriefingScreen>
     super.initState();
     _reader.speaking.addListener(_syncWave);
     markRead(widget.mails[_index], widget.onRead);
-    if (widget.autoRead) _read();
+    if (widget.autoRead) {
+      _read();
+      _hearNext();
+    }
   }
 
   @override
   void dispose() {
     _reader.speaking.removeListener(_syncWave);
+    _unhear();
     _reader.stop();
     _wave.dispose();
     super.dispose();
@@ -95,7 +106,8 @@ class _BriefingScreenState extends State<BriefingScreen>
         : Future.value(spokenBody(mail.body));
     if (!mounted || widget.mails[_index] != mail) return;
     final problem = await _reader.speak(
-      '${next ? '다음 메일입니다.\n' : ''}${mail.from}.\n${mail.subject}.',
+      // Not "다음 메일": the mic listening for "다음" would hear it.
+      '${next ? '이어서 읽을게요.\n' : ''}${mail.from}.\n${mail.subject}.',
       then: rest,
     );
     // Cut off by a tap or another read: that one decides what comes next.
@@ -109,10 +121,53 @@ class _BriefingScreenState extends State<BriefingScreen>
     }
   }
 
+  /// The recogniser's callback before this screen took it, given back after.
+  VoidCallback? _homeOnSpeech;
+
+  /// Hands-free reading listens for "다음" to skip to the next mail. Only
+  /// with mic permission already given: reading never asks for it.
+  Future<void> _hearNext() async {
+    final s = widget.speech;
+    if (s == null || !s.loaded || s.listening) return;
+    if (!await s.micAllowed) return;
+    if (!mounted || !_auto) return;
+    _homeOnSpeech = s.onSpeech;
+    s.onSpeech = _onSpeech;
+    await s.toggleListening(echoCancel: true);
+    if (mounted) setState(() {});
+  }
+
+  void _unhear() {
+    final s = widget.speech;
+    if (s == null || s.onSpeech != _onSpeech) return;
+    s.onSpeech = _homeOnSpeech;
+    // Clear after the stop, which would otherwise set "잘 듣지 못했어요".
+    if (s.listening) {
+      s.toggleListening().whenComplete(() => s.clear(dropPending: true));
+    } else {
+      s.clear(dropPending: true);
+    }
+    if (mounted) setState(() {});
+  }
+
+  void _onSpeech() {
+    final s = widget.speech!;
+    if (s.heard.isEmpty) return;
+    final skip = _auto && isSkipCommand(s.heard);
+    // shortcut: each sentence is judged alone and then dropped; good enough
+    // for one-word commands, not for longer ones.
+    s.clear();
+    if (skip) {
+      _reader.stop();
+      _readNext();
+    }
+  }
+
   /// Hands-free reading: on to the next mail, or says it's done.
   void _readNext() {
     if (_index == widget.mails.length - 1) {
       _auto = false;
+      _unhear();
       _reader.speak('안 읽은 메일을 다 읽었어요.');
       return;
     }
@@ -132,29 +187,8 @@ class _BriefingScreenState extends State<BriefingScreen>
 
   void _stopReading() {
     _auto = false;
+    _unhear();
     _reader.stop();
-  }
-
-  /// A screen is open on top, so the mail's WebView is put away.
-  bool _covered = false;
-
-  /// Opens the reply; [byVoice] starts with dictating it.
-  Future<void> _reply({bool byVoice = false}) async {
-    _auto = false;
-    _reader.stop();
-    setState(() => _covered = true);
-    await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => ComposeScreen(
-          mail: widget.mails[_index],
-          from: [...widget.from, '메일 내용'],
-          speech: widget.speech,
-          byVoice: byVoice,
-        ),
-      ),
-    );
-    if (mounted) setState(() => _covered = false);
   }
 
   @override
@@ -163,13 +197,6 @@ class _BriefingScreenState extends State<BriefingScreen>
     final mail = widget.mails[_index];
     return AppPage(
       trail: [...widget.from, '메일 내용'],
-      floating: WritePill(
-        '답장',
-        onWrite: _reply,
-        onVoice: widget.speech?.loaded == true
-            ? () => _reply(byVoice: true)
-            : null,
-      ),
       children: [
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -217,11 +244,19 @@ class _BriefingScreenState extends State<BriefingScreen>
                     ),
                     const SizedBox(width: 10),
                     Text(
-                      _whole ? '전체 읽는 중' : '요약 읽는 중',
+                      widget.speech?.onSpeech == _onSpeech
+                          ? '"다음" 하면 넘겨요'
+                          : _whole
+                          ? '전체 읽는 중'
+                          : '요약 읽는 중',
                       style: TextStyle(color: colors.onSurfaceVariant),
                     ),
                     const SizedBox(width: 10),
                     FilledButton.icon(
+                      // The theme's full-width minimum breaks inside a Row.
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size(0, 44),
+                      ),
                       onPressed: _stopReading,
                       icon: const Icon(Icons.stop_rounded),
                       label: const Text('멈추기'),
@@ -269,7 +304,7 @@ class _BriefingScreenState extends State<BriefingScreen>
         ),
         const SizedBox(height: 16),
         if (mail.html case final html?)
-          _MailHtml(html, hidden: _covered)
+          _MailHtml(html)
         else
           Text(mail.body, style: const TextStyle(fontSize: 18, height: 1.7)),
         // Room so the last line can scroll out from under the reply pill.
@@ -428,12 +463,8 @@ class _SummaryCardState extends State<_SummaryCard> {
 /// tall as the mail so the page scrolls as one. The mail's own scripts are
 /// blocked and links open in the browser, never inside the app.
 class _MailHtml extends StatefulWidget {
-  const _MailHtml(this.html, {this.hidden = false});
+  const _MailHtml(this.html);
   final String html;
-
-  /// Detaches the WebView but keeps its page and height: on Android it went
-  /// on redrawing (~24 times a second) under a screen pushed on top.
-  final bool hidden;
 
   @override
   State<_MailHtml> createState() => _MailHtmlState();
@@ -471,13 +502,25 @@ class _MailHtmlState extends State<_MailHtml> {
       'overflow-wrap:anywhere}img{max-width:100%;height:auto}</style>'
       '</head><body>${widget.html}</body></html>';
 
+  // Newsletters laid out at a fixed width (often 600–700px) ran off the
+  // right edge; shrink those to the screen width, as mail apps do. The
+  // widest element counts too: a mail's own overflow:hidden box hid its
+  // table from scrollWidth. 16 is the body's right padding.
+  static const _fitAndMeasure =
+      '(function(){var b=document.body,w=window.innerWidth,s=b.scrollWidth;'
+      "document.querySelectorAll('body *').forEach(function(e){"
+      'var r=Math.ceil(e.getBoundingClientRect().right)+16;if(r>s)s=r;});'
+      'if(s<=w+1)return b.scrollHeight;var k=w/s;'
+      "b.style.boxSizing='border-box';b.style.width=s+'px';"
+      "b.style.transformOrigin='0 0';b.style.transform='scale('+k+')';"
+      "document.documentElement.style.overflowX='hidden';"
+      'return b.scrollHeight*k;})()';
+
   Future<void> _measure() async {
     try {
       // The body, not the document: the document is never shorter than the
       // box itself, so a short mail kept the placeholder height.
-      final result = await _web.runJavaScriptReturningResult(
-        'document.body.scrollHeight',
-      );
+      final result = await _web.runJavaScriptReturningResult(_fitAndMeasure);
       final height = double.tryParse('$result');
       if (height == null || !mounted) return;
       // shortcut: past ~15000 device pixels a WebView texture can fail to
@@ -507,7 +550,7 @@ class _MailHtmlState extends State<_MailHtml> {
     borderRadius: BorderRadius.circular(14),
     child: SizedBox(
       height: _height,
-      child: widget.hidden ? null : WebViewWidget(controller: _web),
+      child: WebViewWidget(controller: _web),
     ),
   );
 }
