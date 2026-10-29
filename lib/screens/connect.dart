@@ -408,7 +408,9 @@ Future<void> openLink(BuildContext context, Uri url) async {
   final messenger = ScaffoldMessenger.of(context);
   var opened = false;
   try {
-    opened = await launchUrl(url);
+    // In the browser app, not a tab over this one, so the steps here stay
+    // a switch away while following them.
+    opened = await launchUrl(url, mode: LaunchMode.externalApplication);
   } catch (_) {}
   if (opened) return;
   messenger.showSnackBar(
