@@ -10,6 +10,7 @@ import '../voice/speech.dart';
 import '../mail/summary.dart';
 import '../voice/tts.dart';
 import '../widgets.dart';
+import 'help.dart';
 
 /// 03 — reads one unread mail aloud, with a waveform while it plays.
 /// Whether [said] asks to skip to the next mail. Only a bare "다음" counts:
@@ -113,9 +114,7 @@ class _BriefingScreenState extends State<BriefingScreen>
     // Cut off by a tap or another read: that one decides what comes next.
     if (!mounted || problem == Reader.cut) return;
     if (problem != null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(problem)));
+      showProblem(context, problem);
     } else if (_auto && widget.mails[_index] == mail) {
       _readNext();
     }

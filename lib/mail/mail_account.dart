@@ -308,13 +308,13 @@ class MailAccount {
           ]),
         );
 
-  /// Logs in, opens the inbox (or the sent folder) and runs [body],
-  /// logging out after.
+  /// Logs in, opens the inbox (or the sent or trash [folder]) and runs
+  /// [body], logging out after.
   // ponytail: a fresh IMAP login per call; keep one connection open if
   // reading many mails in a row gets slow.
   Future<T> _inInbox<T>(
     Future<T> Function(ImapClient client, Mailbox inbox) body, {
-    bool sent = false,
+    MailFolder folder = MailFolder.all,
   }) async {
     // Without a limit a server that stops answering left the app loading
     // forever; long enough for 20 whole mails with attachments.
@@ -324,9 +324,15 @@ class MailAccount {
     try {
       await client.connectToServer(service.host, 993);
       await _login(client);
-      final box = sent
-          ? await client.selectMailbox(await _sentBox(client))
-          : await client.selectInbox();
+      final box = switch (folder) {
+        MailFolder.sent => await client.selectMailbox(
+          await _box(client, (b) => b.isSent, 'sent|보낸'),
+        ),
+        MailFolder.trash => await client.selectMailbox(
+          await _box(client, (b) => b.isTrash, 'trash|deleted|휴지통'),
+        ),
+        _ => await client.selectInbox(),
+      };
       return await body(client, box);
     } finally {
       if (client.isLoggedIn) await client.logout().catchError((_) {});
@@ -345,13 +351,22 @@ class MailAccount {
     (client, _) => client.uidMarkSeen(MessageSequence.fromId(uid, isUid: true)),
   );
 
-  /// The newest [limit] inbox (or [sent]) mails, read or not, newest first;
-  /// with [before], the ones older than that UID (더 보기).
+  /// Starred inbox mails (\\Flagged: Gmail's star, Naver's 중요 메일), like
+  /// [fetchUnread].
+  // shortcut: inbox only; Gmail stars in other labels are missed, search
+  // [Gmail]/All Mail if users ask for them.
+  Future<Unread> fetchStarred({int limit = 20, int? before}) => _inInbox(
+    (client, _) => _newest(client, 'FLAGGED', limit, before: before),
+  );
+
+  /// The newest [limit] mails of the inbox (or the sent or trash [folder]),
+  /// read or not, newest first; with [before], the ones older than that UID
+  /// (더 보기).
   Future<List<Mail>> fetchRecent({
     int limit = 20,
-    bool sent = false,
+    MailFolder folder = MailFolder.all,
     int? before,
-  }) => _inInbox(sent: sent, (client, box) async {
+  }) => _inInbox(folder: folder, (client, box) async {
     if (box.messagesExists == 0) return <Mail>[];
     if (before != null) {
       return (await _newest(
@@ -359,14 +374,16 @@ class MailAccount {
         'ALL',
         limit,
         before: before,
-        sent: sent,
+        folder: folder,
       )).mails;
     }
     final fetched = await client.fetchRecentMessages(
       messageCount: limit,
       criteria: '(UID FLAGS BODY.PEEK[])',
     );
-    return [for (final m in fetched.messages.reversed) _toMail(m, sent: sent)];
+    return [
+      for (final m in fetched.messages.reversed) _toMail(m, folder: folder),
+    ];
   });
 
   /// How many mails match [criteria] (below UID [before], when given), with
@@ -376,7 +393,7 @@ class MailAccount {
     String criteria,
     int limit, {
     int? before,
-    bool sent = false,
+    MailFolder folder = MailFolder.all,
   }) async {
     if (before != null) {
       // Nothing is older than UID 1, and "UID 1:0" is not a valid range.
@@ -397,22 +414,27 @@ class MailAccount {
       MessageSequence.fromIds(newest, isUid: true),
       '(UID FLAGS BODY.PEEK[])',
     );
-    final mails = [for (final m in fetched.messages) _toMail(m, sent: sent)]
+    final mails = [for (final m in fetched.messages) _toMail(m, folder: folder)]
       ..sort((a, b) => b.uid!.compareTo(a.uid!));
     return (total: ids.length, mails: mails);
   }
 
-  /// The sent folder: flagged \Sent where the server supports that (Gmail),
-  /// else found by name ("Sent Messages" on Naver).
-  static Future<Mailbox> _sentBox(ImapClient client) async {
+  /// A special folder: flagged (\Sent, \Trash) where the server supports
+  /// that (Gmail), else found by [name] ("Sent Messages" on Naver).
+  static Future<Mailbox> _box(
+    ImapClient client,
+    bool Function(Mailbox) flagged,
+    String name,
+  ) async {
     final boxes = await client.listMailboxes(recursive: true);
-    final byName = RegExp('sent|보낸', caseSensitive: false);
-    return boxes.where((b) => b.isSent).firstOrNull ??
+    final byName = RegExp(name, caseSensitive: false);
+    return boxes.where(flagged).firstOrNull ??
         boxes.firstWhere((b) => byName.hasMatch(b.name));
   }
 
-  /// [sent] mails show who they went to in place of the sender.
-  Mail _toMail(MimeMessage m, {bool sent = false}) {
+  /// Sent mails show who they went to in place of the sender.
+  Mail _toMail(MimeMessage m, {MailFolder folder = MailFolder.all}) {
+    final sent = folder == MailFolder.sent;
     final from = (sent ? m.to : m.from)?.firstOrNull;
     final text = koreanText(m, MediaSubtype.textPlain);
     final html = koreanText(m, MediaSubtype.textHtml);
@@ -437,8 +459,9 @@ class MailAccount {
       date: m.decodeDate(),
       account: this,
       uid: m.uid,
-      // Never mark sent mail read; it is the user's own.
-      seen: sent || m.isSeen,
+      // Never mark sent mail read; it is the user's own. Trash UIDs aren't
+      // the inbox's, where marking read goes.
+      seen: sent || folder == MailFolder.trash || m.isSeen,
       messageId: m.getHeaderValue('message-id')?.trim(),
     );
   }
@@ -458,7 +481,8 @@ class MailAccount {
 
 /// Plain Korean message for a failed connect, for the connect screen.
 String mailError(MailService service, Object error) => switch (error) {
-  SocketException() || TimeoutException() => '인터넷 연결을 확인해 주세요.',
+  // Codes are explained in screens/help.dart.
+  SocketException() || TimeoutException() => '인터넷 연결을 확인해 주세요. (C-01)',
   FlutterAppAuthUserCancelledException() => switch (service) {
     MailService.outlook => '마이크로소프트 로그인을 취소했어요.',
     _ => '구글 로그인을 취소했어요.',
@@ -468,17 +492,11 @@ String mailError(MailService service, Object error) => switch (error) {
   ImapException() ||
   SmtpException() ||
   FlutterAppAuthPlatformException() => switch (service) {
-    MailService.naver =>
-      '로그인하지 못했어요. 평소 비밀번호가 아니라 애플리케이션 비밀번호를 넣었는지, '
-          '네이버 메일에서 IMAP/SMTP 사용을 켰는지 확인해 주세요.',
-    MailService.gmail =>
-      '구글 로그인에 실패했어요. 다시 연결해 주세요. '
-          '회사·학교 계정은 관리자가 외부 앱의 메일 접근을 막아 두었을 수 있어요.',
-    MailService.outlook =>
-      '마이크로소프트 로그인에 실패했어요. 다시 연결해 주세요. '
-          '회사·학교 계정은 관리자가 IMAP·SMTP 접근을 막아 두었을 수 있어요.',
+    MailService.naver => '네이버 로그인에 실패했어요. (L-01)',
+    MailService.gmail => '구글 로그인에 실패했어요. (L-02)',
+    MailService.outlook => '마이크로소프트 로그인에 실패했어요. (L-03)',
   },
-  _ => '${service.label}에 연결하지 못했어요. 잠시 후 다시 시도해 주세요.',
+  _ => '${service.label}에 연결하지 못했어요. (C-02)',
 };
 
 // ponytail: regex HTML stripping, enough to read a mail aloud; tables and

@@ -7,8 +7,51 @@ import '../mail/mail.dart';
 import '../mail/mail_account.dart';
 import '../voice/speech.dart';
 import '../widgets.dart';
+import 'help.dart';
 import 'mail_view.dart';
 import 'settings.dart';
+
+/// 메일: a menu of every [MailFolder].
+class MailMenuScreen extends StatelessWidget {
+  const MailMenuScreen({
+    super.key,
+    required this.from,
+    required this.folderScreen,
+  });
+
+  final List<String> from;
+
+  /// The folder to open, given its breadcrumb.
+  final Widget Function(MailFolder folder, List<String> from) folderScreen;
+
+  @override
+  Widget build(BuildContext context) {
+    final trail = [...from, '메일'];
+    return AppPage(
+      trail: trail,
+      children: [
+        const ScreenTitle('메일', '어떤 메일함을 열까요?'),
+        const SizedBox(height: 20),
+        for (final (folder, icon, sub) in const [
+          (MailFolder.all, Icons.inbox_outlined, '받은 메일 모두'),
+          (MailFolder.unread, Icons.mark_email_unread_outlined, '아직 읽지 않은 메일'),
+          (MailFolder.sent, Icons.send_outlined, '내가 보낸 메일'),
+          (MailFolder.starred, Icons.star_outline_rounded, '별표·중요 표시한 메일'),
+          (MailFolder.trash, Icons.delete_outline_rounded, '지운 메일'),
+        ])
+          MenuRow(
+            folder == MailFolder.all ? '전체 메일함' : folder.label,
+            sub,
+            icon: icon,
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => folderScreen(folder, trail)),
+            ),
+          ),
+      ],
+    );
+  }
+}
 
 /// One [MailFolder] of every linked account, newest first, with a chip per
 /// account to look at one alone. No accounts shows the example mails.
@@ -85,13 +128,13 @@ class _MailFolderScreenState extends State<MailFolderScreen> {
             if (before == null) _totals[account.address] = unread.total;
             return unread.mails;
           }),
-        MailFolder.all => await account.fetchRecent(
+        MailFolder.starred =>
+          await account
+              .fetchStarred(limit: widget.limit, before: before)
+              .then((starred) => starred.mails),
+        _ => await account.fetchRecent(
           limit: widget.limit,
-          before: before,
-        ),
-        MailFolder.sent => await account.fetchRecent(
-          limit: widget.limit,
-          sent: true,
+          folder: widget.folder,
           before: before,
         ),
       };
@@ -217,7 +260,7 @@ class _MailFolderScreenState extends State<MailFolderScreen> {
         const SizedBox(height: 14),
         for (final a in _shown)
           if (_errors[a.address] case final error?) ...[
-            Text(error, style: hint),
+            ProblemText(error, style: hint),
             const SizedBox(height: 8),
           ],
         if (mails.isEmpty)

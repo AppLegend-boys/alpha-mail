@@ -4,10 +4,10 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../mail/mail_account.dart';
 import '../widgets.dart';
+import 'help.dart';
 
 /// Choices from 앱 설정, kept in a JSON file in the app's support folder.
 class AppSettings {
@@ -45,7 +45,7 @@ class AppSettings {
   );
 }
 
-/// 앱 설정: linked mail accounts, how mail is fetched, and what's coming.
+/// 설정: a menu of 메일 연동, 음성 설정, 알림 설정 and 도움말.
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
     super.key,
@@ -54,6 +54,7 @@ class SettingsScreen extends StatefulWidget {
     required this.settings,
     required this.onChanged,
     required this.accountsScreen,
+    required this.voiceScreen,
   });
 
   final List<String> from;
@@ -61,8 +62,9 @@ class SettingsScreen extends StatefulWidget {
   final AppSettings settings;
   final void Function(AppSettings) onChanged;
 
-  /// The account list to open, given its breadcrumb.
+  /// The account list and 음성 설정 to open, given their breadcrumb.
   final Widget Function(List<String> from) accountsScreen;
+  final Widget Function(List<String> from) voiceScreen;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -76,126 +78,116 @@ class _SettingsScreenState extends State<SettingsScreen> {
     widget.onChanged(settings);
   }
 
+  void _open(Widget screen) =>
+      Navigator.push(context, MaterialPageRoute(builder: (_) => screen));
+
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    final trail = [...widget.from, '앱 설정'];
-    final hint = TextStyle(fontSize: 14, color: colors.onSurfaceVariant);
-    Widget heading(String text) => Padding(
-      padding: const EdgeInsets.fromLTRB(4, 24, 4, 10),
-      child: Text(
-        text,
-        style: TextStyle(
-          fontSize: 15,
-          fontWeight: FontWeight.w700,
-          color: colors.onSurfaceVariant,
-        ),
-      ),
-    );
-    Widget row(
-      String title,
-      String sub,
-      Widget trailing, {
-      VoidCallback? onTap,
-    }) => Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: VoiceCard(
-        onTap: onTap,
-        child: Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      fontSize: 17,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(sub, style: hint),
-                ],
-              ),
-            ),
-            const SizedBox(width: 12),
-            trailing,
-          ],
-        ),
-      ),
-    );
-    Widget choices(
-      int value,
-      List<(int, String)> options,
-      void Function(int) onPick,
-    ) => SegmentedButton<int>(
-      showSelectedIcon: false,
-      segments: [
-        for (final (v, label) in options)
-          ButtonSegment(value: v, label: Text(label)),
-      ],
-      selected: {value},
-      onSelectionChanged: (picked) => onPick(picked.single),
-    );
-    final soon = StatusChip('곧 지원', colors.onSurfaceVariant);
+    final trail = [...widget.from, '설정'];
     return AppPage(
       trail: trail,
       children: [
-        const ScreenTitle('앱 설정', '내 메일 공간 설정'),
-        heading('메일 계정'),
-        row(
-          '연결한 메일',
+        const ScreenTitle('', '설정'),
+        const SizedBox(height: 20),
+        MenuRow(
+          '메일 연동',
           widget.accounts.isEmpty
               ? '아직 연결한 메일이 없어요'
               : [for (final a in widget.accounts) a.address].join('\n'),
-          Icon(Icons.chevron_right_rounded, color: colors.onSurfaceVariant),
-          onTap: () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => widget.accountsScreen(trail)),
+          icon: Icons.alternate_email_rounded,
+          onTap: () => _open(widget.accountsScreen(trail)),
+        ),
+        MenuRow(
+          '음성 설정',
+          '음성 모델, 목소리 변경',
+          icon: Icons.record_voice_over_outlined,
+          onTap: () => _open(widget.voiceScreen(trail)),
+        ),
+        MenuRow(
+          '알림 설정',
+          '새 메일 확인, 새 메일 알림',
+          icon: Icons.notifications_none_rounded,
+          onTap: () => _open(
+            NotificationSettingsScreen(
+              from: trail,
+              settings: _settings,
+              onChanged: _set,
+            ),
           ),
         ),
-        heading('메일 가져오기'),
-        row(
-          '새 메일 확인',
-          '홈의 안 읽은 메일 수를 다시 불러와요',
-          choices(_settings.checkMinutes, const [
-            (0, '끄기'),
-            (5, '5분'),
-            (15, '15분'),
-          ], (v) => _set(_settings.copyWith(checkMinutes: v))),
-        ),
-        row(
-          '목록에 보여줄 메일',
-          '계정마다 최근 몇 건까지 불러올지',
-          choices(_settings.listSize, const [
-            (20, '20건'),
-            (50, '50건'),
-            (100, '100건'),
-          ], (v) => _set(_settings.copyWith(listSize: v))),
-        ),
-        // The phone app stands alone, so only desktop has a phone to link.
-        if (isDesktop) ...[
-          heading('폰 연결'),
-          row('폰과 연결하기', '폰에서 말로 이 데스크탑의 메일을 듣고 답장해요', soon),
-        ],
-        heading('알림'),
-        row('새 메일 알림', '새 메일이 오면 알려 드려요', soon),
-        heading('정보'),
-        row(
-          '개인정보',
-          '메일은 우리 서버를 거치지 않고 이 기기에서만 불러와요. '
-              '비밀번호와 로그인 정보는 기기의 보안 저장소에 저장돼요.',
-          const SizedBox.shrink(),
-        ),
-        row(
-          '구글 계정 권한 관리',
-          '구글에서 이 앱의 메일 접근 권한을 직접 확인하거나 해제해요',
-          Icon(Icons.open_in_new_rounded, color: colors.onSurfaceVariant),
-          onTap: () =>
-              launchUrl(Uri.parse('https://myaccount.google.com/permissions')),
+        MenuRow(
+          '도움말',
+          '오류 코드별 해결 방법',
+          icon: Icons.help_outline_rounded,
+          onTap: () => _open(HelpScreen(from: trail)),
         ),
       ],
     );
   }
 }
+
+/// 알림 설정: how often home checks for new mail, and alerts to come.
+class NotificationSettingsScreen extends StatefulWidget {
+  const NotificationSettingsScreen({
+    super.key,
+    required this.from,
+    required this.settings,
+    required this.onChanged,
+  });
+
+  final List<String> from;
+  final AppSettings settings;
+  final void Function(AppSettings) onChanged;
+
+  @override
+  State<NotificationSettingsScreen> createState() =>
+      _NotificationSettingsScreenState();
+}
+
+class _NotificationSettingsScreenState
+    extends State<NotificationSettingsScreen> {
+  late var _settings = widget.settings;
+
+  @override
+  Widget build(BuildContext context) => AppPage(
+    trail: [...widget.from, '알림 설정'],
+    children: [
+      const ScreenTitle('알림 설정', '새 메일을 언제 알려 드릴까요?'),
+      const SizedBox(height: 20),
+      MenuRow(
+        '새 메일 확인',
+        '홈의 안 읽은 메일 수를 다시 불러와요',
+        trailing: _choices(
+          _settings.checkMinutes,
+          const [(0, '끄기'), (5, '5분'), (15, '15분')],
+          (v) {
+            setState(() => _settings = _settings.copyWith(checkMinutes: v));
+            widget.onChanged(_settings);
+          },
+        ),
+      ),
+      MenuRow(
+        '새 메일 알림',
+        '새 메일이 오면 알려 드려요',
+        trailing: StatusChip(
+          '곧 지원',
+          Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
+      ),
+    ],
+  );
+}
+
+Widget _choices(
+  int value,
+  List<(int, String)> options,
+  void Function(int) onPick,
+) => SegmentedButton<int>(
+  showSelectedIcon: false,
+  segments: [
+    for (final (v, label) in options)
+      ButtonSegment(value: v, label: Text(label)),
+  ],
+  selected: {value},
+  onSelectionChanged: (picked) => onPick(picked.single),
+);

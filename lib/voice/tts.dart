@@ -43,8 +43,7 @@ class Reader {
           !(v['features'] ?? '').split('\t').contains('notInstalled'),
     );
     if (offline.isEmpty) {
-      return '한국어 오프라인 음성이 없어요. 휴대폰 설정의 '
-          "'텍스트 음성 변환'에서 한국어 음성 데이터를 받아 주세요.";
+      return '한국어 오프라인 음성이 없어요. (V-01)';
     }
     final voice = offline.first;
     await _tts.setVoice({'name': voice['name']!, 'locale': voice['locale']!});

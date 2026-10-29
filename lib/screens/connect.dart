@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../mail/mail_account.dart';
 import '../widgets.dart';
+import 'help.dart';
 
 /// First step of connecting: pick the mail service. Any number of accounts
 /// can be linked, several per service too.
@@ -291,7 +292,7 @@ class _MailConnectScreenState extends State<MailConnectScreen> {
                 '"올바르지 않은 접근"이 뜨면 naver.com에서 '
                 '내 프로필 → 네이버ID → 보안설정으로 들어가 주세요.',
             action: '네이버 보안설정 열기',
-            url: _naverSecurity,
+            url: naverSecurity,
             copy: 'Alpha Mail',
           ),
           const SizedBox(height: 10),
@@ -302,7 +303,7 @@ class _MailConnectScreenState extends State<MailConnectScreen> {
                 '버튼을 누르면 네이버 메일의 IMAP 설정 화면이 바로 열려요. '
                 '"IMAP/SMTP 사용"을 "사용함"으로 고르고 저장해요.',
             action: 'IMAP 설정 바로 열기',
-            url: _naverMail,
+            url: naverMail,
           ),
           const SizedBox(height: 10),
           const _SetupStep(
@@ -355,12 +356,9 @@ class _MailConnectScreenState extends State<MailConnectScreen> {
           ),
         if (_error case final error?) ...[
           const SizedBox(height: 12),
-          Semantics(
-            liveRegion: true,
-            child: Text(
-              error,
-              style: TextStyle(color: colors.error, height: 1.5),
-            ),
+          ProblemText(
+            error,
+            style: TextStyle(color: colors.error, height: 1.5),
           ),
         ],
         const SizedBox(height: 20),
@@ -399,14 +397,14 @@ class _MailConnectScreenState extends State<MailConnectScreen> {
 // Naver ID's security tab. nid.naver.com sometimes rejects pages opened
 // from outside Naver ("일시적인 오류이거나 올바르지 않은 접근"), so the step
 // also spells out the route from naver.com.
-final _naverSecurity = Uri.parse(
+final naverSecurity = Uri.parse(
   'https://nid.naver.com/user2/help/myInfoV2?m=viewSecurity&lang=ko_KR',
 );
-final _naverMail = Uri.parse('https://mail.naver.com/v2/settings/smtp/imap');
+final naverMail = Uri.parse('https://mail.naver.com/v2/settings/smtp/imap');
 
 /// Opens [url] in the browser; if that fails, offers the address to copy
 /// so the user is never left with a button that silently does nothing.
-Future<void> _open(BuildContext context, Uri url) async {
+Future<void> openLink(BuildContext context, Uri url) async {
   final messenger = ScaffoldMessenger.of(context);
   var opened = false;
   try {
@@ -493,7 +491,7 @@ class _SetupStep extends StatelessWidget {
                     children: [
                       if (url case final url?)
                         OutlinedButton.icon(
-                          onPressed: () => _open(context, url),
+                          onPressed: () => openLink(context, url),
                           icon: const Icon(Icons.open_in_new_rounded, size: 18),
                           label: Text(action!),
                           style: OutlinedButton.styleFrom(

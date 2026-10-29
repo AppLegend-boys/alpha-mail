@@ -96,6 +96,12 @@ class VoiceSettingsScreen extends StatelessWidget {
             _modelCard(context, m, colors, locked),
             const SizedBox(height: 12),
           ],
+          const SizedBox(height: 12),
+          MenuRow(
+            '목소리 변경',
+            '메일을 읽어 주는 목소리를 골라요',
+            trailing: StatusChip('곧 지원', colors.onSurfaceVariant),
+          ),
         ],
       );
     },

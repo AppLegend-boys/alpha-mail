@@ -93,7 +93,9 @@ const mockMails = [
 enum MailFolder {
   all('전체 메일'),
   unread('안 읽은 메일'),
-  sent('보낸 메일');
+  sent('보낸 메일'),
+  starred('즐겨찾기'),
+  trash('휴지통');
 
   const MailFolder(this.label);
   final String label;

@@ -7,6 +7,7 @@ import '../mail/mail_account.dart';
 import '../voice/speech.dart';
 import '../voice/tts.dart';
 import '../widgets.dart';
+import 'help.dart';
 
 enum SendAnswer { yes, no, again, unclear }
 
@@ -167,8 +168,7 @@ class _ComposeScreenState extends State<ComposeScreen> {
 
   void _redraw() => setState(() {});
 
-  void _snack(String text) =>
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  void _snack(String text) => showProblem(context, text);
 
   /// Takes the mic's speech callback from home, which would otherwise hear
   /// "응" in the reply as its own command.
@@ -352,7 +352,7 @@ class _ComposeScreenState extends State<ComposeScreen> {
   /// [_stop], saying why aloud: the user may not be looking.
   void _stopSaying(String note) {
     _stop(note);
-    _reader.speak(note);
+    _reader.speak(withoutCode(note));
   }
 
   Future<void> _send({bool byVoice = false}) async {

@@ -14,10 +14,9 @@ import '../voice/tts.dart';
 import '../widgets.dart';
 import 'compose.dart';
 import 'connect.dart';
-import 'home_menu.dart';
+import 'help.dart';
 import 'mail_list.dart';
 import 'mail_view.dart';
-import 'offline.dart';
 import 'settings.dart';
 import 'voice_settings.dart';
 
@@ -35,7 +34,6 @@ class _HomeScreenState extends State<HomeScreen> {
   final _speech = Recognizer();
   late final _downloads = ModelDownloads(onDone: _speech.switchWhenFree);
   final _inbox = MailInbox();
-  final _scaffold = GlobalKey<ScaffoldState>();
   final _content = GlobalKey<NavigatorState>();
   AppSettings _settings = const AppSettings();
   bool _opening = false;
@@ -43,12 +41,9 @@ class _HomeScreenState extends State<HomeScreen> {
   /// Saying "읽어드릴까요?" before the mic turns on.
   bool _asking = false;
 
-  /// Menu item lit up in the sidebar; [_push] sets it, and it goes back to
-  /// home once that screen closes.
+  /// Dock tab lit up; [_push] sets it, and it goes back to home once that
+  /// screen closes.
   String _section = 'home';
-
-  /// Sidebar shrunk to an icon rail (wide windows only).
-  bool _railOnly = false;
 
   /// Bumped per [_push], so a screen closing after another menu item has
   /// opened leaves the newer highlight alone.
@@ -159,8 +154,7 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-  /// Screens open in the content pane: above the dock on phones, beside
-  /// the sidebar on wide windows.
+  /// Screens open in the content pane, above the dock.
   Future<void> _push(Widget screen, {String? section}) async {
     final push = ++_pushes;
     setState(() {
@@ -181,22 +175,11 @@ class _HomeScreenState extends State<HomeScreen> {
   /// instead of closing and reopening it, which flashed home in between.
   void _reopen(String section, VoidCallback open) {
     if (_section != section || _top == null) return open();
-    _closeDrawer();
     _content.currentState?.popUntil((route) => route == _top);
   }
 
-  /// Menu taps close the drawer; the sidebar has none to close.
-  void _closeDrawer() {
-    if (_scaffold.currentState?.isEndDrawerOpen ?? false) {
-      Navigator.pop(context);
-    }
-  }
-
-  /// Back to home with the drawer shut, before a menu item opens its screen.
-  void _goHome() {
-    _closeDrawer();
-    _content.currentState?.popUntil((route) => route.isFirst);
-  }
+  /// Back to home, before a dock tab opens its screen.
+  void _goHome() => _content.currentState?.popUntil((route) => route.isFirst);
 
   void _openSettings() {
     _goHome();
@@ -212,6 +195,25 @@ class _HomeScreenState extends State<HomeScreen> {
           _inbox.checkEvery(settings.checkMinutes);
         },
         accountsScreen: _providerScreen,
+        voiceScreen: (from) {
+          _downloads.refreshOnPhone();
+          return VoiceSettingsScreen(
+            from: from,
+            speech: _speech,
+            downloads: _downloads,
+          );
+        },
+      ),
+    );
+  }
+
+  void _openMail() {
+    _goHome();
+    _push(
+      section: 'mail',
+      MailMenuScreen(
+        from: [homeLabel],
+        folderScreen: (folder, from) => _folderScreen(folder, from: from),
       ),
     );
   }
@@ -228,37 +230,27 @@ class _HomeScreenState extends State<HomeScreen> {
     onRemoved: _inbox.remove,
   );
 
-  /// Opens a [MailFolder] from the menu or a home card, [only] one
-  /// account's mail when given.
+  /// Opens a [MailFolder] from a home card, [only] one account's mail when
+  /// given.
   void _openFolder(MailFolder folder, {MailAccount? only}) {
     _goHome();
-    _push(
-      section: folder.name,
-      MailFolderScreen(
-        from: [homeLabel],
-        folder: folder,
-        accounts: _inbox.accounts,
-        only: only,
-        limit: _settings.listSize,
-        onRead: _inbox.markRead,
-        onOpenAll: (only) => _openFolder(MailFolder.all, only: only),
-        speech: _speech,
-      ),
-    );
+    _push(section: 'mail', _folderScreen(folder, only: only));
   }
 
-  void _openVoiceSettings() {
-    _downloads.refreshOnPhone();
-    _goHome();
-    _push(
-      section: 'voice',
-      VoiceSettingsScreen(
-        from: [homeLabel],
-        speech: _speech,
-        downloads: _downloads,
-      ),
-    );
-  }
+  Widget _folderScreen(
+    MailFolder folder, {
+    List<String>? from,
+    MailAccount? only,
+  }) => MailFolderScreen(
+    from: from ?? [homeLabel],
+    folder: folder,
+    accounts: _inbox.accounts,
+    only: only,
+    limit: _settings.listSize,
+    onRead: _inbox.markRead,
+    onOpenAll: (only) => _openFolder(MailFolder.all, only: only),
+    speech: _speech,
+  );
 
   void _openCompose() {
     _goHome();
@@ -276,11 +268,6 @@ class _HomeScreenState extends State<HomeScreen> {
         },
       ),
     );
-  }
-
-  void _openOffline() {
-    _goHome();
-    _push(section: 'offline', OfflineScreen(from: [homeLabel]));
   }
 
   // ponytail: keyword match, not intent parsing; enough for "어, 해줘" /
@@ -337,9 +324,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     // No voice: the question is still on screen, so listen anyway.
     if (problem != null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(problem)));
+      showProblem(context, problem);
     }
     await _speech.toggleListening();
   }
@@ -352,9 +337,7 @@ class _HomeScreenState extends State<HomeScreen> {
       if (_speech.listening) await _speech.toggleListening();
       if (!mounted) return;
       if (mails.isEmpty) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(_inbox.error ?? '안 읽은 메일이 없어요')));
+        showProblem(context, _inbox.error ?? '안 읽은 메일이 없어요');
         return;
       }
       await _push(
@@ -370,20 +353,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     if (mounted) _speech.clear();
   }
-
-  Widget _menu({bool sidebar = false}) => HomeMenu(
-    sidebar: sidebar,
-    railOnly: _railOnly,
-    onToggleRail: () => setState(() => _railOnly = !_railOnly),
-    section: _section,
-    linked: _inbox.accounts.isNotEmpty,
-    onHome: _goHome,
-    onFolder: _openFolder,
-    onVoice: _openVoiceSettings,
-    onConnect: _openConnect,
-    onSettings: _openSettings,
-    onOffline: _openOffline,
-  );
 
   /// Unread mail across accounts: the server's count, or the example mails'.
   int get _unreadCount => _inbox.accounts.isEmpty
@@ -473,22 +442,28 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ),
                   ),
-                  Text(
-                    switch (_inbox.unread[a.address]) {
-                      null when _inbox.errors[a.address] == null => '…',
-                      null => '실패',
-                      _ => '${_inbox.unreadTotal[a.address] ?? 0}',
-                    },
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w800,
-                      color:
-                          _inbox.errors[a.address] != null &&
-                              _inbox.unread[a.address] == null
-                          ? colors.error
-                          : colors.onSurface,
+                  if (_inbox.unread[a.address] == null &&
+                      _inbox.errors[a.address] == null)
+                    const SizedBox.square(
+                      dimension: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2.5),
+                    )
+                  else
+                    Text(
+                      switch (_inbox.unread[a.address]) {
+                        null => '실패',
+                        _ => '${_inbox.unreadTotal[a.address] ?? 0}',
+                      },
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w800,
+                        color:
+                            _inbox.errors[a.address] != null &&
+                                _inbox.unread[a.address] == null
+                            ? colors.error
+                            : colors.onSurface,
+                      ),
                     ),
-                  ),
                 ],
               ),
             ),
@@ -685,14 +660,11 @@ class _HomeScreenState extends State<HomeScreen> {
                   _goHome,
                 ),
                 tab(
-                  '메일함',
+                  '메일',
                   Icons.mail_outline_rounded,
                   Icons.mail_rounded,
-                  MailFolder.values.any((f) => f.name == _section),
-                  () => _reopen(
-                    MailFolder.all.name,
-                    () => _openFolder(MailFolder.all),
-                  ),
+                  _section == 'mail',
+                  () => _reopen('mail', _openMail),
                 ),
                 const Spacer(),
                 tab(
@@ -768,27 +740,11 @@ class _HomeScreenState extends State<HomeScreen> {
             ? const EdgeInsets.fromLTRB(48, 48, 48, 32)
             : const EdgeInsets.fromLTRB(16, 8, 16, 24),
         children: [
-          if (!wide) ...[
-            Row(
-              children: [
-                const Padding(
-                  padding: EdgeInsets.only(left: 4),
-                  child: Brand(),
-                ),
-                const Spacer(),
-                IconButton(
-                  tooltip: '메뉴',
-                  onPressed: () => _scaffold.currentState?.openEndDrawer(),
-                  icon: const Icon(Icons.menu_rounded),
-                  iconSize: 24,
-                  style: IconButton.styleFrom(
-                    minimumSize: const Size.square(48),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-          ],
+          const Padding(
+            padding: EdgeInsets.fromLTRB(4, 12, 4, 0),
+            child: Align(alignment: Alignment.centerLeft, child: Brand()),
+          ),
+          const SizedBox(height: 16),
           if (!isDesktop && _downloads.shown != null) ...[
             DownloadBanner(_downloads),
             const SizedBox(height: 20),
@@ -838,7 +794,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
             if (_inbox.error case final error?) ...[
               const SizedBox(height: 10),
-              Text(
+              ProblemText(
                 '$error\n아래로 당기면 다시 불러와요',
                 style: TextStyle(fontSize: 13, color: colors.error),
               ),
@@ -921,7 +877,7 @@ class _HomeScreenState extends State<HomeScreen> {
           // again too, or every screen's top bar sits a status bar lower.
           child: MediaQuery.removePadding(
             context: context,
-            removeTop: !wide,
+            removeTop: true,
             removeBottom: showBar,
             child: screens,
           ),
@@ -948,26 +904,7 @@ class _HomeScreenState extends State<HomeScreen> {
         },
         child: Focus(
           autofocus: true,
-          child: Scaffold(
-            key: _scaffold,
-            endDrawer: wide ? null : Drawer(child: _menu()),
-            body: wide
-                ? Row(
-                    children: [
-                      Container(
-                        width: _railOnly ? 84 : 288,
-                        decoration: BoxDecoration(
-                          border: Border(
-                            right: BorderSide(color: colors.outlineVariant),
-                          ),
-                        ),
-                        child: _menu(sidebar: true),
-                      ),
-                      Expanded(child: content),
-                    ],
-                  )
-                : SafeArea(bottom: false, child: content),
-          ),
+          child: Scaffold(body: SafeArea(bottom: false, child: content)),
         ),
       ),
     );

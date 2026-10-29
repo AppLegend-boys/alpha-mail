@@ -75,7 +75,76 @@ class VoiceCard extends StatelessWidget {
   }
 }
 
-/// Small grey label above a big white title, as on every design screen.
+/// One row of a menu or settings list: [title] over [sub], with [trailing]
+/// on the right, or a chevron when it opens a screen.
+class MenuRow extends StatelessWidget {
+  const MenuRow(
+    this.title,
+    this.sub, {
+    super.key,
+    this.icon,
+    this.trailing,
+    this.onTap,
+  });
+
+  final String title;
+  final String sub;
+  final IconData? icon;
+  final Widget? trailing;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: VoiceCard(
+        onTap: onTap,
+        child: Row(
+          children: [
+            if (icon != null) ...[
+              Icon(icon, size: 24, color: colors.onSurface),
+              const SizedBox(width: 14),
+            ],
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    sub,
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            trailing ??
+                (onTap == null
+                    ? const SizedBox.shrink()
+                    : Icon(
+                        Icons.chevron_right_rounded,
+                        color: colors.onSurfaceVariant,
+                      )),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Small grey label (none when empty) above a big title, as on every
+/// design screen.
 class ScreenTitle extends StatelessWidget {
   const ScreenTitle(this.label, this.title, {super.key});
   final String label;
@@ -87,11 +156,13 @@ class ScreenTitle extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          label,
-          style: TextStyle(fontSize: 14, color: colors.onSurfaceVariant),
-        ),
-        const SizedBox(height: 6),
+        if (label.isNotEmpty) ...[
+          Text(
+            label,
+            style: TextStyle(fontSize: 14, color: colors.onSurfaceVariant),
+          ),
+          const SizedBox(height: 6),
+        ],
         Text(
           title,
           style: const TextStyle(
@@ -382,7 +453,7 @@ mixin SafeNotifier on ChangeNotifier {
   }
 }
 
-/// Logo lockup, shared by the home bar and the drawer.
+/// Logo lockup at the top of home.
 /// The symbol's drop of blue: "mail" in the logo and the unread count.
 const accent = Color(0xff1d5bd6);
 

@@ -1,8 +1,10 @@
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:alpha_mail/voice/speech.dart';
 import 'package:alpha_mail/mail/mail_account.dart';
 import 'package:alpha_mail/screens/compose.dart';
+import 'package:alpha_mail/screens/help.dart';
 import 'package:alpha_mail/screens/mail_view.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -123,5 +125,25 @@ void main() {
       (MailService.outlook, 'minji@outlook.com'),
     );
     expect(MailAccount.fromJson({'nope': 1}), isNull);
+  });
+
+  test('every error code in a message is explained in 도움말', () {
+    final message = mailError(MailService.naver, const SocketException('down'));
+    expect(problemCode('a@naver.com: $message'), 'C-01');
+    expect(withoutCode(message), '인터넷 연결을 확인해 주세요.');
+    expect(problemCode('안 읽은 메일이 없어요'), isNull);
+    // Codes written in the sources must all be in the table.
+    final used = {
+      for (final f in Directory('lib').listSync(recursive: true))
+        if (f is File &&
+            f.path.endsWith('.dart') &&
+            !f.path.endsWith('help.dart'))
+          for (final m in RegExp(
+            r"\(([A-Z]-\d\d)\)'",
+          ).allMatches(f.readAsStringSync()))
+            m[1]!,
+    };
+    expect(used, isNotEmpty);
+    expect(problems.keys, containsAll(used));
   });
 }
