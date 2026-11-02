@@ -150,11 +150,28 @@ class MailAccount {
         : MailAccount.google(email, result.refreshToken!);
   }
 
+  /// flutter_appauth refuses a token request while another runs
+  /// ("Concurrent operations detected"), so Gmail and Outlook take turns.
+  static Future<void> _tokenTurn = Future.value();
+
   /// Trades the refresh token for a fresh hour-long access token.
   Future<String> _accessToken() async {
-    if (_access case final access? when DateTime.now().isBefore(_accessUntil)) {
-      return access;
+    bool fresh() => _access != null && DateTime.now().isBefore(_accessUntil);
+    if (fresh()) return _access!;
+    final turn = _tokenTurn;
+    final done = Completer<void>();
+    _tokenTurn = done.future;
+    try {
+      await turn;
+      // Another login of this account may have renewed it meanwhile.
+      if (fresh()) return _access!;
+      return await _renewAccess();
+    } finally {
+      done.complete();
     }
+  }
+
+  Future<String> _renewAccess() async {
     final (clientId, redirect, config, scopes) = _oauth(service);
     final token = await _appAuth
         .token(
