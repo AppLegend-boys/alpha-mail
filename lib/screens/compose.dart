@@ -117,6 +117,19 @@ class ComposeScreen extends StatefulWidget {
 class _ComposeScreenState extends State<ComposeScreen> {
   final _reader = Reader.instance;
   late final _to = TextEditingController(text: widget.mail?.address);
+
+  /// Picked from the menu beside 받는 사람, joined to the ID at send time.
+  String? _domain;
+
+  /// The recipient: the field as typed, plus [_domain] when it holds only an
+  /// ID.
+  String get _address {
+    final typed = _to.text.trim();
+    return typed.isEmpty || typed.contains('@') || _domain == null
+        ? typed
+        : '$typed@$_domain';
+  }
+
   late final _subject = TextEditingController(
     text: switch (widget.mail?.subject) {
       null => '',
@@ -291,13 +304,13 @@ class _ComposeScreenState extends State<ComposeScreen> {
     setState(() => _step = _Step.talking);
     await _mute();
     if (!mounted || _step != _Step.talking) return;
-    if (_to.text.trim().isEmpty) {
+    if (_address.isEmpty) {
       _asked = 0;
       return _retry('누구에게 보낼까요? 이름이나 메일 주소를 말씀해 주세요.', _Step.naming);
     }
     // The recipient is read out too: a misheard name must not slip by.
     if (!await _say(
-      '${_to.text.trim()}에게 이렇게 보낼게요. ${_body.text.trim()}. '
+      '$_address에게 이렇게 보낼게요. ${_body.text.trim()}. '
       '보낼까요? 보내, 다시, 취소 중에 말씀해 주세요.',
     )) {
       return;
@@ -327,7 +340,10 @@ class _ComposeScreenState extends State<ComposeScreen> {
   void _name(String said) {
     if (findRecipient(said, widget.contacts, me: _sender?.address)
         case final address?) {
-      _to.text = address;
+      setState(() {
+        _to.text = address;
+        _domain = null;
+      });
       _asked = 0;
       _confirm();
     } else if (++_asked > 2) {
@@ -368,7 +384,7 @@ class _ComposeScreenState extends State<ComposeScreen> {
 
   Future<void> _send({bool byVoice = false}) async {
     final sender = _sender;
-    final to = _to.text.trim();
+    final to = _address;
     final messenger = ScaffoldMessenger.of(context);
     void fail(String message) {
       if (byVoice) return _stopSaying(message);
@@ -420,7 +436,7 @@ class _ComposeScreenState extends State<ComposeScreen> {
     _Step.dictating => ('듣고 있어요', '다 말씀하시고 잠시 멈추면 읽어 드려요'),
     _Step.naming => ('누구에게 보낼까요?', '이름, 메일 주소, 또는 "나한테"'),
     _Step.confirming => ('보낼까요?', '"보내", "다시", "취소"로 말씀해 주세요'),
-    _Step.sending => ('보내는 중이에요', _to.text.trim()),
+    _Step.sending => ('보내는 중이에요', _address),
     _Step.idle => switch (_note) {
       final note? => (note, '마이크를 누르면 다시 말로 쓸 수 있어요'),
       null => null,
@@ -514,21 +530,39 @@ class _ComposeScreenState extends State<ComposeScreen> {
                     controller: _to,
                     style: text,
                     keyboardType: TextInputType.emailAddress,
-                    onChanged: _edited,
-                    decoration: bare.copyWith(hintText: '메일 주소'),
+                    onChanged: (typed) {
+                      // A typed @ means a whole address; the menu steps aside.
+                      if (typed.contains('@') && _domain != null) {
+                        setState(() => _domain = null);
+                      }
+                      _edited(typed);
+                    },
+                    decoration: bare.copyWith(
+                      hintText: _domain == null ? '메일 주소' : '아이디',
+                    ),
                   ),
                 ),
-                // Swaps what's after @, keeping the ID typed before it.
+                // The field keeps the ID; the address after @ sits here
+                // until sending. Empty means 직접 입력.
                 PopupMenuButton<String>(
                   tooltip: '@ 뒤 주소 고르기',
                   onSelected: (domain) {
-                    final id = _to.text.trim().split('@').first;
-                    _to.text = '$id@$domain';
-                    _edited(_to.text);
+                    // 직접 입력 puts the whole address in the field to edit;
+                    // a domain keeps only the ID.
+                    final typed = domain.isEmpty
+                        ? _address
+                        : _to.text.trim().split('@').first;
+                    _to.value = TextEditingValue(
+                      text: typed,
+                      selection: TextSelection.collapsed(offset: typed.length),
+                    );
+                    setState(() => _domain = domain.isEmpty ? null : domain);
+                    _edited(typed);
                   },
                   itemBuilder: (_) => [
                     for (final d in _domains)
                       PopupMenuItem(value: d, child: Text('@$d')),
+                    const PopupMenuItem(value: '', child: Text('직접 입력')),
                   ],
                   child: Padding(
                     padding: const EdgeInsets.only(left: 8),
@@ -536,11 +570,13 @@ class _ComposeScreenState extends State<ComposeScreen> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
-                          '@주소',
-                          style: TextStyle(
-                            fontSize: 15,
-                            color: colors.onSurfaceVariant,
-                          ),
+                          _domain == null ? '@주소' : '@$_domain',
+                          style: _domain == null
+                              ? TextStyle(
+                                  fontSize: 15,
+                                  color: colors.onSurfaceVariant,
+                                )
+                              : text,
                         ),
                         Icon(
                           Icons.arrow_drop_down_rounded,
