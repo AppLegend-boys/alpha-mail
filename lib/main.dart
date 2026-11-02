@@ -5,21 +5,11 @@ import 'package:flutter/services.dart';
 import 'screens.dart';
 
 void main() {
-  // SystemChrome below talks to the platform, which needs the binding.
-  WidgetsFlutterBinding.ensureInitialized();
   LicenseRegistry.addLicense(() async* {
     yield LicenseEntryWithLineBreaks([
       'Gowun Batang',
     ], await rootBundle.loadString('assets/fonts/OFL.txt'));
   });
-  // Android: hide the system navigation bar (a swipe up shows it for a
-  // moment); keep the status bar.
-  if (defaultTargetPlatform == TargetPlatform.android) {
-    SystemChrome.setEnabledSystemUIMode(
-      SystemUiMode.manual,
-      overlays: [SystemUiOverlay.top],
-    );
-  }
   runApp(const AlphaMailApp());
 }
 

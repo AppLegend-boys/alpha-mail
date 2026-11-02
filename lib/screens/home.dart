@@ -890,8 +890,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle.dark.copyWith(
-        systemNavigationBarColor: colors.surface,
+        // The same as the dock just above it.
+        systemNavigationBarColor: colors.surfaceContainer,
+        systemNavigationBarDividerColor: colors.surfaceContainer,
         systemNavigationBarIconBrightness: Brightness.dark,
+        systemNavigationBarContrastEnforced: false,
       ),
       child: CallbackShortcuts(
         bindings: {
