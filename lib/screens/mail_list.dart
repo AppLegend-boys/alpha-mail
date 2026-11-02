@@ -401,66 +401,62 @@ class MailTile extends StatelessWidget {
     final when = _when(mail.date);
     return VoiceCard(
       onTap: onTap,
-      child: Opacity(
-        opacity: read ? 0.5 : 1,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    mail.from,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-                // The badge stands for the service's name; example mails
-                // have no account, so they keep the name as text.
-                if (mail.account?.service case final service?
-                    when showSource) ...[
-                  Semantics(
-                    label: service.label,
-                    child: ExcludeSemantics(
-                      child: ServiceBadge(
-                        service.mark,
-                        service.color,
-                        size: 14,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 4),
-                ],
-                Text(
-                  showSource && mail.account == null
-                      ? '${mail.source} · $when'
-                      : when,
+      // Read mails step back in weight and grey, not opacity, so their text
+      // keeps its contrast.
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  mail.from,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: 13,
-                    color: colors.onSurfaceVariant,
+                    fontSize: 16,
+                    fontWeight: read ? FontWeight.w500 : FontWeight.w700,
+                    color: read ? colors.onSurfaceVariant : null,
                   ),
                 ),
+              ),
+              // The badge stands for the service's name; example mails
+              // have no account, so they keep the name as text.
+              if (mail.account?.service case final service?
+                  when showSource) ...[
+                Semantics(
+                  label: service.label,
+                  child: ExcludeSemantics(
+                    child: ServiceBadge(service.mark, service.color, size: 14),
+                  ),
+                ),
+                const SizedBox(width: 4),
               ],
+              Text(
+                showSource && mail.account == null
+                    ? '${mail.source}, $when'
+                    : when,
+                style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            mail.subject,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 15,
+              color: read ? colors.onSurfaceVariant : null,
             ),
-            const SizedBox(height: 4),
-            Text(
-              mail.subject,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 15),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              mail.body.replaceAll(RegExp(r'\s+'), ' '),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
-            ),
-          ],
-        ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            mail.body.replaceAll(RegExp(r'\s+'), ' '),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
+          ),
+        ],
       ),
     );
   }

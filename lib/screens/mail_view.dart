@@ -112,7 +112,10 @@ class _BriefingScreenState extends State<BriefingScreen>
   }
 
   void _syncWave() {
-    _reader.speaking.value ? _wave.repeat() : _wave.stop();
+    // The wave holds still under the phone's reduce-motion setting.
+    _reader.speaking.value && !MediaQuery.disableAnimationsOf(context)
+        ? _wave.repeat()
+        : _wave.stop();
     setState(() {});
   }
 
@@ -234,7 +237,7 @@ class _BriefingScreenState extends State<BriefingScreen>
             borderRadius: BorderRadius.circular(10),
           ),
           child: Text(
-            '${mail.source} · ${_index + 1} / ${widget.mails.length}',
+            '${mail.source}, ${_index + 1} / ${widget.mails.length}',
             style: TextStyle(
               fontSize: 14,
               fontWeight: FontWeight.w700,
@@ -450,7 +453,7 @@ class _SummaryCardState extends State<_SummaryCard> {
       body = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('요약 모델 받는 중 · $progress% · 앱을 닫아도 계속 받아요', style: hint),
+          Text('요약 모델 $progress% 받았어요. 앱을 닫아도 계속 받아요', style: hint),
           const SizedBox(height: 8),
           LinearProgressIndicator(value: progress / 100),
         ],

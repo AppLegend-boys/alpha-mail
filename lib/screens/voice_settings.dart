@@ -158,7 +158,7 @@ class VoiceSettingsScreen extends StatelessWidget {
             children: [
               Expanded(
                 child: Text(
-                  '${m.label} · ${m.title}',
+                  '${m.label} (${m.title})',
                   style: const TextStyle(
                     fontSize: 17,
                     fontWeight: FontWeight.w700,
@@ -178,7 +178,7 @@ class VoiceSettingsScreen extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           Text(
-            '${m.blurb} · ${m.recommend} · ${m.size}',
+            '${m.blurb}. ${m.recommend} 좋아요. 크기는 ${m.size}',
             style: TextStyle(fontSize: 14, color: colors.onSurfaceVariant),
           ),
           const SizedBox(height: 12),
@@ -316,7 +316,7 @@ class DownloadBanner extends StatelessWidget {
             ),
             const SizedBox(height: 6),
             Text(
-              '파일 ${downloads.filesDone}/${downloads.shown!.files.length}개 받음 · '
+              '파일 ${downloads.filesDone}/${downloads.shown!.files.length}개 받았어요. '
               '${isDesktop ? '앱을 닫아도 이어서 받아요' : '화면을 꺼도 계속 받아요'}',
               style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
             ),

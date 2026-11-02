@@ -67,7 +67,7 @@ class Summarizer {
         _group,
         running: const bd.TaskNotification(
           '요약 모델을 내려받고 있어요',
-          '{progress} · 앱을 닫아도 계속 받아요',
+          '{progress} 받았어요. 앱을 닫아도 계속 받아요',
         ),
         complete: const bd.TaskNotification('요약 모델을 다 받았어요', '메일을 열면 바로 요약해요'),
         error: const bd.TaskNotification('요약 모델을 받지 못했어요', '앱을 열고 다시 받아 주세요'),

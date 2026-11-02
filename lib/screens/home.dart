@@ -407,15 +407,15 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ],
               ),
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 56,
                 height: 1,
                 fontWeight: FontWeight.w900,
-                color: accent,
+                color: colors.secondary,
               ),
             ),
             const Text(
-              '메일함 열기 ›',
+              '메일함 열기',
               style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
             ),
           ],
@@ -520,7 +520,7 @@ class _HomeScreenState extends State<HomeScreen> {
         ? (_speech.status, '처음 한 번만 조금 걸려요')
         : waiting != null
         ? (
-            '${waiting.label} 모델 받는 중 · ${(_downloads.fraction * 100).floor()}%',
+            '${waiting.label} 모델 ${(_downloads.fraction * 100).floor()}% 받았어요',
             '다 받으면 눌러서 말할 수 있어요',
           )
         : needsModel
@@ -532,7 +532,7 @@ class _HomeScreenState extends State<HomeScreen> {
         : _speech.partial == '…'
         ? ('말씀을 확인하고 있어요', '잠시만요')
         : (
-            wide && !isDesktop ? '눌러서 말하기 · Space' : '눌러서 말하기',
+            wide && !isDesktop ? '눌러서 말하기 (Space)' : '눌러서 말하기',
             _speech.status == Recognizer.missed
                 ? Recognizer.missed
                 : '"오늘 메일 온 거 읊어줘"',
@@ -702,7 +702,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ? '${_speech.model.label} 모델 내려받기'
               : _speech.listening || _asking
               ? '듣기 멈추기'
-              : '말하기 시작 · "오늘 메일 온 거 읊어줘"',
+              : '말하기 시작, "오늘 메일 온 거 읊어줘"',
           // From another screen the mic goes home first, where the voice
           // chat shows.
           onPressed: onMic == null
@@ -962,7 +962,7 @@ class _MicButton extends StatelessWidget {
                           color: colors.onPrimary,
                         ),
                       )
-                    : Icon(icon, size: 26, color: voiceBlue),
+                    : Icon(icon, size: 26, color: colors.inversePrimary),
               ),
             ),
           ),

@@ -37,7 +37,8 @@ ThemeData _theme() {
     onPrimary: Color(0xffffffff),
     primaryContainer: Color(0xffe0e0e0),
     onPrimaryContainer: symbol,
-    secondary: ink,
+    // The logo's drop of blue: "mail" in the logo and the unread count.
+    secondary: Color(0xff1d5bd6),
     onSecondary: Color(0xffffffff),
     tertiary: Color(0xfff2a93b),
     onTertiary: Color(0xff1d1407),
@@ -49,6 +50,8 @@ ThemeData _theme() {
     surfaceContainer: Color(0xffffffff),
     outline: Color(0xff8a8a8a),
     outlineVariant: Color(0xffd6d6d6),
+    // Voice controls on the black mic and write pill.
+    inversePrimary: Color(0xff8db4ff),
   );
   return ThemeData(
     useMaterial3: true,
@@ -105,7 +108,9 @@ class _AlphaMailAppState extends State<AlphaMailApp> {
           ignoring: !_splash,
           child: AnimatedOpacity(
             opacity: _splash ? 1 : 0,
-            duration: const Duration(milliseconds: 300),
+            duration: MediaQuery.disableAnimationsOf(context)
+                ? Duration.zero
+                : const Duration(milliseconds: 300),
             child: const _Splash(),
           ),
         ),

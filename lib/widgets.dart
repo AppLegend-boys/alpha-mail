@@ -3,10 +3,6 @@ import 'dart:io';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
-/// Amber for offline / waiting states (design 06).
-const amber = Color(0xfff2a93b);
-const amberCard = Color(0xfffff1dc);
-
 /// Desktop is mail-first for now: voice recognition and its models are off.
 final isDesktop = Platform.isMacOS || Platform.isWindows || Platform.isLinux;
 
@@ -33,6 +29,7 @@ class ServiceBadge extends StatelessWidget {
         fontSize: size < 20 ? size * 0.65 : size * 0.45,
         height: 1,
         fontWeight: FontWeight.w900,
+        // The service's own mark, white as in its logo.
         color: Colors.white,
       ),
     ),
@@ -399,7 +396,11 @@ class WritePill extends StatelessWidget {
             ),
           ),
           if (onVoice != null) ...[
-            Container(width: 1, height: 22, color: Colors.white24),
+            Container(
+              width: 1,
+              height: 22,
+              color: colors.onPrimary.withValues(alpha: 0.24),
+            ),
             InkWell(
               onTap: onVoice,
               child: Padding(
@@ -408,15 +409,15 @@ class WritePill extends StatelessWidget {
                   label: voiceLabel ?? '말로 $label',
                   child: Row(
                     children: [
-                      Icon(voiceIcon, color: const Color(0xffc5c0ff)),
+                      Icon(voiceIcon, color: colors.inversePrimary),
                       if (voiceLabel case final text?) ...[
                         const SizedBox(width: 6),
                         Text(
                           text,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 15,
                             fontWeight: FontWeight.w600,
-                            color: Color(0xffc5c0ff),
+                            color: colors.inversePrimary,
                           ),
                         ),
                       ],
@@ -470,12 +471,6 @@ mixin SafeNotifier on ChangeNotifier {
 }
 
 /// Logo lockup at the top of home.
-/// The symbol's drop of blue: "mail" in the logo and the unread count.
-const accent = Color(0xff1d5bd6);
-
-/// Light blue for the mic icon on black.
-const voiceBlue = Color(0xff8db4ff);
-
 class Brand extends StatelessWidget {
   const Brand({super.key});
 

@@ -103,7 +103,7 @@ class MailProviderScreen extends StatelessWidget {
                 if (a.service == service) a.address,
             ]) {
               [] => sub,
-              final linked => '연결됨 · ${linked.join(', ')}',
+              final linked => '${linked.join(', ')} 연결됨',
             },
             onTap: () => Navigator.push(
               context,
@@ -188,7 +188,9 @@ class _MailConnectScreenState extends State<MailConnectScreen> {
       Navigator.popUntil(context, (route) => route.isFirst);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('${account.address}을 연결했어요 · 안 읽은 메일 ${unread.total}건'),
+          content: Text(
+            '${account.address}을 연결했어요. 안 읽은 메일이 ${unread.total}건 있어요',
+          ),
         ),
       );
     } catch (error) {

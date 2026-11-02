@@ -221,6 +221,9 @@ class _HelpScreenState extends State<HelpScreen> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    final motion = MediaQuery.disableAnimationsOf(context)
+        ? Duration.zero
+        : const Duration(milliseconds: 200);
     return AppPage(
       trail: [...widget.from, '도움말'],
       children: [
@@ -263,7 +266,7 @@ class _HelpScreenState extends State<HelpScreen> {
                           ),
                           AnimatedRotation(
                             turns: _open == code ? 0.5 : 0,
-                            duration: const Duration(milliseconds: 200),
+                            duration: motion,
                             child: Icon(
                               Icons.expand_more_rounded,
                               color: colors.onSurfaceVariant,
@@ -275,7 +278,7 @@ class _HelpScreenState extends State<HelpScreen> {
                   ),
                 ),
                 AnimatedSize(
-                  duration: const Duration(milliseconds: 200),
+                  duration: motion,
                   alignment: Alignment.topCenter,
                   child: _open == code
                       ? Padding(
