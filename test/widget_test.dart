@@ -6,6 +6,7 @@ import 'package:alpha_mail/mail/mail_account.dart';
 import 'package:alpha_mail/screens/compose.dart';
 import 'package:alpha_mail/screens/help.dart';
 import 'package:alpha_mail/screens/mail_view.dart';
+import 'package:alpha_mail/voice/tts.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -84,6 +85,40 @@ void main() {
     expect(findRecipient('내게요.', contacts, me: me), me);
     expect(findRecipient('나에게', contacts, me: me), me);
     expect(findRecipient('나한테', contacts), isNull);
+  });
+
+  test('speakable puts what the voice would spell out into words', () {
+    expect(
+      speakable('회의는 2026.11.11 14:30, 문의 010-1234-5678'),
+      '회의는 2026년 11월 11일 14시 30분, 문의 공일공, 일이삼사, 오육칠팔',
+    );
+    expect(
+      speakable('hong@naver.com 으로 회신 😀👍🏻'),
+      'hong 골뱅이 naver.com 으로 회신 ',
+    );
+    expect(
+      speakable('₩10,000 / \$5 / 3~5일 ㅋㅋㅋ!!!'),
+      '10,000원 / 5달러 / 3에서 5일 !',
+    );
+    expect(speakable('=====\n★ 공지 ★\nhttps://a.com/x'), ' \n 공지 \n링크');
+    expect(speakable('9:00 출발'), '9시 출발');
+  });
+
+  test('spokenBody leaves out quoted mail, signature and footer', () {
+    expect(
+      spokenBody(
+        '네 좋아요.\n\n2026년 11월 1일 (일) 오후 3:00, 홍길동 <a@b.com>님이 작성:\n> 내일 볼까요?',
+      ),
+      '네 좋아요.',
+    );
+    expect(spokenBody('확인했습니다.\n-- \n홍길동 드림'), '확인했습니다.');
+    expect(spokenBody('고마워요\niPhone에서 보냄'), '고마워요');
+    expect(
+      spokenBody('이번 주 소식\n본문 하나\n본문 둘\n본문 셋\n수신거부는 여기\n주소'),
+      '이번 주 소식\n본문 하나\n본문 둘\n본문 셋',
+    );
+    // Nothing would be left: read it all.
+    expect(spokenBody('보낸 사람: 홍길동\n안녕'), '보낸 사람: 홍길동\n안녕');
   });
 
   test('htmlToText keeps line breaks and drops markup', () {

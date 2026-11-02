@@ -72,7 +72,7 @@ class Reader {
   static const cut = 'cut';
 
   Future<void> _say(String text, int run) async {
-    for (final part in _parts(text)) {
+    for (final part in _parts(speakable(text))) {
       if (run != _run) return;
       await _tts.speak(part);
     }
@@ -104,7 +104,88 @@ class Reader {
   }
 }
 
-/// A mail body as read aloud, with links replaced so long URLs aren't
-/// spelled out.
-String spokenBody(String body) =>
-    body.replaceAll(RegExp(r'https?://\S+'), '링크');
+/// A mail body as read aloud: without the quoted mail it answers, the
+/// signature and a newsletter's 수신거부 footer. Falls back to the whole
+/// body if that would leave nothing.
+String spokenBody(String body) {
+  final kept = <String>[];
+  final lines = body.split('\n');
+  for (final (i, raw) in lines.indexed) {
+    final line = raw.trim();
+    // What follows is an earlier mail or a signature.
+    if (_quoteStart.hasMatch(line) || raw == '-- ') break;
+    // A footer: only in the latter half, where newsletters put it.
+    if (i > lines.length / 2 && _footer.hasMatch(line)) break;
+    if (line.startsWith('>') || _sentFrom.hasMatch(line)) continue;
+    kept.add(raw);
+  }
+  final text = kept.join('\n').trim();
+  return text.isEmpty ? body : text;
+}
+
+/// The line that starts a quoted or forwarded mail: Gmail's "…님이 작성:",
+/// "On … wrote:", "-----Original Message-----" and Outlook's "From:" or
+/// "보낸 사람:" header block.
+final _quoteStart = RegExp(
+  r'(님이 작성:|wrote:)$|^-{3,}\s*(original message|원본 메일|forwarded message|전달된 메일)|^(from|보낸 사람)\s*:',
+  caseSensitive: false,
+);
+final _sentFrom = RegExp(
+  r'^(sent from my \w+|\S+에서 보냄)$',
+  caseSensitive: false,
+);
+final _footer = RegExp(
+  r'수신\s*거부|수신을 원하지|unsubscribe|발신\s*전용',
+  caseSensitive: false,
+);
+
+const _digits = ['공', '일', '이', '삼', '사', '오', '육', '칠', '팔', '구'];
+
+/// [text] as the phone's voice should hear it: links, symbols and emoji
+/// that it would spell out or name are dropped or put into words.
+String speakable(String text) {
+  String digits(String n) =>
+      [for (final c in n.split('')) _digits[int.parse(c)]].join();
+  return text
+      .replaceAll(RegExp(r'(https?://|www\.)\S+'), '링크')
+      // Before addresses and dates, whose dots and dashes they share.
+      .replaceAllMapped(
+        RegExp(
+          r'(?<![\d.])(0\d{1,2}|1[5-9]\d{2})-(\d{3,4})(?:-(\d{4}))?(?![\d.])',
+        ),
+        (m) => [m[1]!, m[2]!, ?m[3]].map(digits).join(', '),
+      )
+      .replaceAllMapped(
+        RegExp(r'([\w.+-]+)@([\w-]+(?:\.[\w-]+)+)'),
+        (m) => '${m[1]} 골뱅이 ${m[2]}',
+      )
+      .replaceAllMapped(
+        RegExp(r'(?<!\d)(20\d\d)[.\-/](\d{1,2})[.\-/](\d{1,2})\.?(?!\d)'),
+        (m) => '${m[1]}년 ${int.parse(m[2]!)}월 ${int.parse(m[3]!)}일',
+      )
+      .replaceAllMapped(
+        RegExp(r'(?<![\d:])([01]?\d|2[0-3]):([0-5]\d)(?![\d:])'),
+        (m) =>
+            '${int.parse(m[1]!)}시${m[2] == '00' ? '' : ' ${int.parse(m[2]!)}분'}',
+      )
+      .replaceAllMapped(RegExp(r'₩\s?([\d,]+)'), (m) => '${m[1]}원')
+      .replaceAllMapped(RegExp(r'\$\s?([\d,.]+)'), (m) => '${m[1]}달러')
+      .replaceAllMapped(RegExp(r'€\s?([\d,.]+)'), (m) => '${m[1]}유로')
+      .replaceAllMapped(RegExp(r'(\d)\s*~\s*(\d)'), (m) => '${m[1]}에서 ${m[2]}')
+      // Emoji (with their joiners and variation selectors), drawn lines,
+      // bullets and boxes the voice would name one by one.
+      .replaceAll(
+        RegExp(
+          // The analyzer doesn't know this property; the Dart VM does.
+          // ignore: valid_regexps
+          r'[\p{Extended_Pictographic}\u{200D}\u{FE0F}\u{20E3}\u{1F3FB}-\u{1F3FF}]',
+          unicode: true,
+        ),
+        '',
+      )
+      .replaceAll(RegExp(r'[─━│┃┌┐└┘├┤■□▶▷◀◁▲△▼▽●○◆◇★☆※♥♡◎•·~]'), ' ')
+      .replaceAll(RegExp(r'([-=_*#+])\1{2,}'), ' ')
+      .replaceAll(RegExp(r'[ㅋㅎㅠㅜ]{2,}'), '')
+      .replaceAllMapped(RegExp(r'([!?.])\1+'), (m) => m[1]!)
+      .replaceAll(RegExp(r'[ \t]{2,}'), ' ');
+}
