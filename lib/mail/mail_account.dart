@@ -113,6 +113,11 @@ class MailAccount {
   /// Called after [secret] changes, to save the new one.
   static void Function()? onRenewed;
 
+  /// The last OAuth access token, reused until shortly before it expires
+  /// instead of asking Google or Microsoft again on every IMAP login.
+  String? _access;
+  DateTime _accessUntil = DateTime(0);
+
   String get id => address.split('@').first;
 
   /// Opens Google's or Microsoft's sign-in page and returns the account it
@@ -147,6 +152,9 @@ class MailAccount {
 
   /// Trades the refresh token for a fresh hour-long access token.
   Future<String> _accessToken() async {
+    if (_access case final access? when DateTime.now().isBefore(_accessUntil)) {
+      return access;
+    }
     final (clientId, redirect, config, scopes) = _oauth(service);
     final token = await _appAuth
         .token(
@@ -165,7 +173,12 @@ class MailAccount {
       secret = renewed;
       onRenewed?.call();
     }
-    return token.accessToken!;
+    // A margin, so it doesn't run out between here and the login.
+    _accessUntil =
+        (token.accessTokenExpirationDateTime ??
+                DateTime.now().add(const Duration(minutes: 30)))
+            .subtract(const Duration(minutes: 5));
+    return _access = token.accessToken!;
   }
 
   /// Logs in to the IMAP server.
@@ -174,7 +187,13 @@ class MailAccount {
       case MailService.naver:
         await client.login(id, secret);
       case MailService.gmail || MailService.outlook:
-        await client.authenticateWithOAuth2(address, await _accessToken());
+        try {
+          await client.authenticateWithOAuth2(address, await _accessToken());
+        } catch (_) {
+          // A revoked token: ask for a new one next time.
+          _access = null;
+          rethrow;
+        }
     }
   }
 
@@ -386,11 +405,11 @@ class MailAccount {
         folder: folder,
       )).mails;
     }
-    final sized = await client.fetchRecentMessages(
+    final listed = await client.fetchRecentMessages(
       messageCount: limit,
-      criteria: '(UID RFC822.SIZE)',
+      criteria: _listItems,
     );
-    return _forList(client, sized.messages, folder);
+    return _forList(client, listed.messages, folder);
   });
 
   /// [mail] whole, with the HTML and attachments a list leaves out.
@@ -427,68 +446,85 @@ class MailAccount {
     ]..sort();
     if (ids.isEmpty) return (total: 0, mails: <Mail>[]);
     final newest = ids.sublist(ids.length > limit ? ids.length - limit : 0);
-    final sized = await client.uidFetchMessages(
+    final listed = await client.uidFetchMessages(
       MessageSequence.fromIds(newest, isUid: true),
-      '(UID RFC822.SIZE)',
+      _listItems,
     );
     return (
       total: ids.length,
-      mails: await _forList(client, sized.messages, folder),
+      mails: await _forList(client, listed.messages, folder),
     );
   }
 
-  /// Mails up to this size come whole; bigger ones carry attachments,
-  /// which took most of a list's loading time.
+  /// What a list fetches first: the headers, and the structure to pick
+  /// the text part from.
+  static const _listItems =
+      '(UID FLAGS RFC822.SIZE BODYSTRUCTURE BODY.PEEK[HEADER])';
+
+  /// One-part mails up to this size come whole; there's nothing to leave
+  /// out of them.
   static const _wholeLimit = 100 * 1024;
 
-  /// The [sized] mails (UID and size fetched) for a list, newest first:
-  /// small ones whole, big ones with only their text, to fetch whole when
-  /// opened ([fetchWhole]).
+  /// The [listed] mails (fetched with [_listItems]) for a list, newest
+  /// first: with only their text part, the HTML and attachments left to
+  /// fetch when opened ([fetchWhole]).
   Future<List<Mail>> _forList(
     ImapClient client,
-    List<MimeMessage> sized,
+    List<MimeMessage> listed,
     MailFolder folder,
   ) async {
-    Future<List<MimeMessage>> fetch(bool big, String what) async {
-      final uids = [
-        for (final m in sized)
-          if ((m.size ?? 0) > _wholeLimit == big) m.uid!,
-      ];
-      if (uids.isEmpty) return [];
-      return (await client.uidFetchMessages(
-        MessageSequence.fromIds(uids, isUid: true),
-        what,
-      )).messages;
-    }
-
+    final whole = {
+      for (final m in listed)
+        if (m.body?.parts?.isNotEmpty != true && (m.size ?? 0) <= _wholeLimit)
+          m.uid!,
+    };
     final mails = [
-      for (final m in await fetch(false, '(UID FLAGS BODY.PEEK[])'))
-        _toMail(m, folder: folder),
+      if (whole.isNotEmpty)
+        for (final m in (await client.uidFetchMessages(
+          MessageSequence.fromIds([...whole], isUid: true),
+          '(UID FLAGS BODY.PEEK[])',
+        )).messages)
+          _toMail(m, folder: folder),
     ];
-    for (final m in await fetch(
-      true,
-      '(UID FLAGS BODYSTRUCTURE BODY.PEEK[HEADER])',
-    )) {
+    final rest = [
+      for (final m in listed)
+        if (!whole.contains(m.uid)) m,
+    ];
+    // Text parts by part number, so mails sharing one ("1", "1.1") come in
+    // a single fetch instead of one each.
+    final texts = <String, List<(MimeMessage, BodyPart)>>{};
+    for (final m in rest) {
       final text =
           m.body?.findFirst(MediaSubtype.textPlain) ??
           m.body?.findFirst(MediaSubtype.textHtml);
-      String? body;
       // shortcut: a big mail that is one part (no fetch ID) shows no
       // preview until opened.
-      if (text?.fetchId case final id?) {
-        final fetched = await client.uidFetchMessage(
-          m.uid!,
-          '(BODY.PEEK[$id])',
-        );
-        if (fetched.messages.firstOrNull?.getPart(id) case final part?) {
+      if (text?.fetchId case final id?) (texts[id] ??= []).add((m, text!));
+    }
+    final previews = <int, String>{};
+    for (final MapEntry(key: id, value: parts) in texts.entries) {
+      final fetched = {
+        for (final f in (await client.uidFetchMessages(
+          MessageSequence.fromIds([
+            for (final (m, _) in parts) m.uid!,
+          ], isUid: true),
+          '(UID BODY.PEEK[$id])',
+        )).messages)
+          f.uid: f,
+      };
+      for (final (m, text) in parts) {
+        if (fetched[m.uid]?.getPart(id) case final part?) {
           m.setPart(id, part);
-          body = _asKorean(part) ?? part.decodeContentText();
-          if (text!.contentType?.mediaType.sub == MediaSubtype.textHtml) {
-            body = htmlToText(body ?? '');
-          }
+          final body = _asKorean(part) ?? part.decodeContentText() ?? '';
+          previews[m.uid!] =
+              text.contentType?.mediaType.sub == MediaSubtype.textHtml
+              ? htmlToText(body)
+              : body;
         }
       }
-      mails.add(_toMail(m, folder: folder, preview: body ?? ''));
+    }
+    for (final m in rest) {
+      mails.add(_toMail(m, folder: folder, preview: previews[m.uid] ?? ''));
     }
     return mails..sort((a, b) => b.uid!.compareTo(a.uid!));
   }
