@@ -6,6 +6,7 @@ import 'package:alpha_mail/mail/mail_account.dart';
 import 'package:alpha_mail/screens/compose.dart';
 import 'package:alpha_mail/screens/help.dart';
 import 'package:alpha_mail/screens/mail_view.dart';
+import 'package:alpha_mail/screens/voice_home.dart';
 import 'package:alpha_mail/voice/tts.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -219,5 +220,25 @@ void main() {
     };
     expect(used, isNotEmpty);
     expect(problems.keys, containsAll(used));
+  });
+
+  test('voice pill says what the app is doing, and paused wins', () {
+    expect(pillText(VoiceStep.asking).$1, '물어보는 중');
+    expect(pillText(VoiceStep.listening).$1, '듣고 있어요');
+    expect(pillText(VoiceStep.listening, again: true).$1, '다시 듣고 있어요');
+    expect(
+      pillText(VoiceStep.listening, again: true, checking: true).$1,
+      '확인하고 있어요',
+    );
+    expect(pillText(VoiceStep.reading, index: 0).$1, '1번째 메일 읽는 중');
+    expect(pillText(VoiceStep.reading, paused: true), ('멈췄어요', '눌러서 이어 듣기'));
+  });
+
+  test('voice answers: a bare 어 is yes, chatter around it is not', () {
+    expect(isYesCommand('어, 해줘'), isTrue);
+    expect(isYesCommand('어'), isTrue);
+    expect(isYesCommand('어제 회의'), isFalse);
+    expect(isLaterCommand('나중에'), isTrue);
+    expect(isLaterCommand('그만 읽어'), isTrue);
   });
 }

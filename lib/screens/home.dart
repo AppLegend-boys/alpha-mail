@@ -18,6 +18,7 @@ import 'help.dart';
 import 'mail_list.dart';
 import 'mail_view.dart';
 import 'settings.dart';
+import 'voice_home.dart';
 import 'voice_settings.dart';
 
 /// Voice home: a tile per account's unread count, the mic dock, and the
@@ -272,23 +273,16 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ponytail: keyword match, not intent parsing; enough for "어, 해줘" /
-  // "나중에" until a real assistant backend answers.
-  // A bare "응"/"네" only counts as the whole answer; inside other words it
-  // fired on background chatter.
-  static final _yes = RegExp(r'읽어|읊어|해줘|해 줘|그래|좋아|^\s*(응|네|예|어)\s*[.!?]?\s*$');
-  static final _later = RegExp(r'나중|그만|취소');
-
   void _checkCommand() {
     final said = '${_speech.heard} ${_speech.partial}';
     if (!_speech.listening || _opening) return;
-    if (_later.hasMatch(said)) {
+    if (isLaterCommand(said)) {
       _opening = true;
       _speech.toggleListening().whenComplete(() {
         _opening = false;
         Reader.instance.speak('알겠어요. 필요하면 다시 불러 주세요.');
       });
-    } else if (_yes.hasMatch(said)) {
+    } else if (isYesCommand(said)) {
       _openBriefing();
     }
   }
@@ -449,6 +443,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final wide = MediaQuery.sizeOf(context).width >= 840;
+    final voice = !isDesktop && _settings.screenMode == 'voice';
     final needsModel = !_speech.busy && !_speech.loaded;
     // Nothing to talk with until this download lands, so the mic waits.
     final waiting = needsModel ? _downloads.downloading : null;
@@ -684,6 +679,9 @@ class _HomeScreenState extends State<HomeScreen> {
       >= 18 && < 23 => '좋은 저녁이에요',
       _ => '편안한 밤 보내세요',
     };
+    final dateLine =
+        '$greeting · ${now.month}월 ${now.day}일 '
+        '${'월화수목금토일'[now.weekday - 1]}요일';
     final list = RefreshIndicator(
       onRefresh: _inbox.refresh,
       child: ListView(
@@ -745,8 +743,7 @@ class _HomeScreenState extends State<HomeScreen> {
             Padding(
               padding: const EdgeInsets.fromLTRB(4, 2, 4, 0),
               child: Text(
-                '$greeting · ${now.month}월 ${now.day}일 '
-                '${'월화수목금토일'[now.weekday - 1]}요일',
+                dateLine,
                 style: TextStyle(fontSize: 15, color: colors.onSurfaceVariant),
               ),
             ),
@@ -873,7 +870,30 @@ class _HomeScreenState extends State<HomeScreen> {
             key: const ValueKey('home'),
             child: Material(
               color: colors.surface,
-              child: wide
+              child: voice
+                  ? VoiceHome(
+                      speech: _speech,
+                      downloads: _downloads,
+                      inbox: _inbox,
+                      unread: _unreadCount,
+                      greeting: dateLine,
+                      onDownload: onMic == null || _speech.loaded
+                          ? null
+                          : onMic,
+                      onOpenMail: _openMail,
+                      onCompose: _openCompose,
+                      onReply: (mail) => _push(
+                        ComposeScreen(
+                          from: [homeLabel],
+                          mail: mail,
+                          accounts: _inbox.accounts,
+                          speech: _speech,
+                        ),
+                      ),
+                      onSettings: _openSettings,
+                      onConnect: _openConnect,
+                    )
+                  : wide
                   ? Center(
                       child: ConstrainedBox(
                         constraints: const BoxConstraints(maxWidth: 760),
@@ -888,7 +908,11 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
     // Hidden while typing, so the keyboard doesn't push it up the screen.
-    final showBar = !isDesktop && MediaQuery.viewInsetsOf(context).bottom == 0;
+    // Voice home has its own buttons and the mic, so no dock over it.
+    final showBar =
+        !isDesktop &&
+        !(voice && _open == 0) &&
+        MediaQuery.viewInsetsOf(context).bottom == 0;
     // This context sits above the SafeArea, so drop the status bar again
     // too, or every screen's top bar sits a status bar lower. The bottom
     // padding is the dock's room, which each screen's list scrolls under.
@@ -925,6 +949,7 @@ class _HomeScreenState extends State<HomeScreen> {
             const SingleActivator(LogicalKeyboardKey.space): () {
               // Only on the home pane, where the mic is.
               if (onMic != null &&
+                  !voice &&
                   !(_content.currentState?.canPop() ?? false)) {
                 onMic();
               }

@@ -272,6 +272,9 @@ class Recognizer extends ChangeNotifier with SafeNotifier {
 
   static const missed = '잘 듣지 못했어요. 다시 말씀해 주세요.';
 
+  /// [status] when the phone won't give the app the mic.
+  static const noMic = '설정에서 마이크 권한을 허용해 주세요';
+
   /// Starts on the first model already on the phone.
   Future<void> start() async {
     try {
@@ -479,7 +482,7 @@ class Recognizer extends ChangeNotifier with SafeNotifier {
     try {
       if (!await _recorder.hasPermission()) {
         error = true;
-        status = '설정에서 마이크 권한을 허용해 주세요';
+        status = noMic;
         return notifyListeners();
       }
       final audio = await _recorder.startStream(
