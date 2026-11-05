@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -36,7 +37,53 @@ class ServiceBadge extends StatelessWidget {
   );
 }
 
-/// Rounded dark card with a hairline border, the base of every block.
+/// Frosted white over whatever scrolls beneath: the dock, the mic and the
+/// round back button. Solid white when the phone asks for more contrast.
+class Glass extends StatelessWidget {
+  const Glass({super.key, required this.child, this.radius = 22});
+  final Widget child;
+  final double radius;
+
+  @override
+  Widget build(BuildContext context) {
+    final round = BorderRadius.circular(radius);
+    final solid = MediaQuery.highContrastOf(context);
+    final face = DecoratedBox(
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: solid ? 1 : 0.72),
+        borderRadius: round,
+        border: Border.all(
+          color: Colors.white.withValues(alpha: 0.75),
+          width: 0.5,
+        ),
+      ),
+      child: child,
+    );
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: round,
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x1f000000),
+            blurRadius: 30,
+            offset: Offset(0, 8),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: round,
+        child: solid
+            ? face
+            : BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
+                child: face,
+              ),
+      ),
+    );
+  }
+}
+
+/// White rounded group on the grey background, the base of every block.
 class VoiceCard extends StatelessWidget {
   const VoiceCard({
     super.key,
@@ -56,12 +103,14 @@ class VoiceCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final radius = BorderRadius.circular(14);
+    final radius = BorderRadius.circular(22);
     return Material(
       color: color ?? colors.surfaceContainer,
       shape: RoundedRectangleBorder(
         borderRadius: radius,
-        side: BorderSide(color: borderColor ?? colors.outlineVariant),
+        side: borderColor == null
+            ? BorderSide.none
+            : BorderSide(color: borderColor!),
       ),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
@@ -70,6 +119,35 @@ class VoiceCard extends StatelessWidget {
       ),
     );
   }
+}
+
+/// [MenuRow]s as one white group with hairlines between them, as in iOS
+/// settings.
+class MenuGroup extends StatelessWidget {
+  const MenuGroup({super.key, required this.children});
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: 20),
+    child: VoiceCard(
+      padding: EdgeInsets.zero,
+      child: Column(
+        children: [
+          for (final (i, row) in children.indexed) ...[
+            if (i > 0)
+              Divider(
+                height: 0.5,
+                thickness: 0.5,
+                indent: 60,
+                color: Theme.of(context).colorScheme.outlineVariant,
+              ),
+            row,
+          ],
+        ],
+      ),
+    ),
+  );
 }
 
 /// One row of a menu or settings list: [title] (and a lighter [note] beside
@@ -96,68 +174,75 @@ class MenuRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    final row = Row(
+      children: [
+        // An ink tile holding the icon, as in iOS settings.
+        if (icon != null) ...[
+          Container(
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(
+              color: colors.primary,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(icon, size: 18, color: colors.onPrimary),
+          ),
+          const SizedBox(width: 14),
+        ],
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text.rich(
+                TextSpan(
+                  text: title,
+                  children: [
+                    if (note != null)
+                      TextSpan(
+                        text: ' $note',
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                          color: colors.onSurfaceVariant,
+                        ),
+                      ),
+                  ],
+                ),
+                style: const TextStyle(fontSize: 17),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                sub,
+                style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 12),
+        trailing ??
+            (onTap == null
+                ? const SizedBox.shrink()
+                : Icon(Icons.chevron_right_rounded, color: colors.outline)),
+      ],
+    );
+    // Inside a MenuGroup the group is the card; alone, the row is one.
+    if (context.findAncestorWidgetOfExactType<MenuGroup>() != null) {
+      return InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: row,
+        ),
+      );
+    }
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
-      child: VoiceCard(
-        onTap: onTap,
-        child: Row(
-          children: [
-            if (icon != null) ...[
-              Icon(icon, size: 24, color: colors.onSurface),
-              const SizedBox(width: 14),
-            ],
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text.rich(
-                    TextSpan(
-                      text: title,
-                      children: [
-                        if (note != null)
-                          TextSpan(
-                            text: ' $note',
-                            style: TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600,
-                              color: colors.onSurfaceVariant,
-                            ),
-                          ),
-                      ],
-                    ),
-                    style: const TextStyle(
-                      fontSize: 17,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    sub,
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: colors.onSurfaceVariant,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 12),
-            trailing ??
-                (onTap == null
-                    ? const SizedBox.shrink()
-                    : Icon(
-                        Icons.chevron_right_rounded,
-                        color: colors.onSurfaceVariant,
-                      )),
-          ],
-        ),
-      ),
+      child: VoiceCard(onTap: onTap, child: row),
     );
   }
 }
 
-/// Small grey label (none when empty) above a big title, as on every
-/// design screen.
+/// Small grey label (none when empty) above an iOS large title.
 class ScreenTitle extends StatelessWidget {
   const ScreenTitle(this.label, this.title, {super.key});
   final String label;
@@ -179,9 +264,10 @@ class ScreenTitle extends StatelessWidget {
         Text(
           title,
           style: const TextStyle(
-            fontSize: 28,
-            height: 1.35,
-            fontWeight: FontWeight.w800,
+            fontSize: 34,
+            height: 1.2,
+            fontWeight: FontWeight.w700,
+            letterSpacing: -0.7,
           ),
         ),
       ],
@@ -244,24 +330,27 @@ class _AppPageState extends State<AppPage> {
     child: GestureDetector(
       onHorizontalDragEnd: Platform.isIOS ? null : _onSwipe,
       child: Scaffold(
-        // Shorter than the default 56 so the back button and path sit as
-        // high as the home's logo row.
         appBar: AppBar(
-          toolbarHeight: 48,
-          leadingWidth: 48,
-          titleSpacing: 0,
+          toolbarHeight: 56,
+          leadingWidth: 64,
+          titleSpacing: 4,
+          leading: Navigator.canPop(context) ? const _GlassBack() : null,
           title: _Trail(widget.trail),
         ),
-        body: SafeArea(
-          top: false,
-          // Desktop windows: keep the column readable instead of edge to edge.
-          child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 760),
-              child: ListView(
-                padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
-                children: widget.children,
+        // Desktop windows: keep the column readable instead of edge to edge.
+        body: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 760),
+            // Scrolls on under the floating dock, which the bottom padding
+            // (the dock's height, set by home) clears at the end.
+            child: ListView(
+              padding: EdgeInsets.fromLTRB(
+                20,
+                4,
+                20,
+                24 + MediaQuery.paddingOf(context).bottom,
               ),
+              children: widget.children,
             ),
           ),
         ),
@@ -274,6 +363,33 @@ class _AppPageState extends State<AppPage> {
           null => null,
         },
         floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+      ),
+    ),
+  );
+}
+
+/// Round white back button, top left of every screen but home.
+class _GlassBack extends StatelessWidget {
+  const _GlassBack();
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(left: 16),
+    // Plain white: the top bar is solid, so there is nothing to frost.
+    child: Center(
+      child: Material(
+        color: Colors.white,
+        shape: const CircleBorder(),
+        elevation: 3,
+        shadowColor: const Color(0x55000000),
+        child: SizedBox.square(
+          dimension: 44,
+          child: IconButton(
+            tooltip: '뒤로',
+            onPressed: () => Navigator.maybePop(context),
+            icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 20),
+          ),
+        ),
       ),
     ),
   );
@@ -337,7 +453,7 @@ class _Trail extends StatelessWidget {
   }
 }
 
-/// Black pill floating over a screen: write a mail or reply, or say one.
+/// Ink pill floating over a screen: write a mail or reply, or say one.
 class WritePill extends StatelessWidget {
   const WritePill(
     this.label, {

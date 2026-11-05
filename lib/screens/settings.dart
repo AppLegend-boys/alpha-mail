@@ -89,37 +89,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
       children: [
         const ScreenTitle('', '설정'),
         const SizedBox(height: 20),
-        MenuRow(
-          '메일 연동',
-          widget.accounts.isEmpty
-              ? '아직 연결한 메일이 없어요'
-              : [for (final a in widget.accounts) a.address].join('\n'),
-          icon: Icons.alternate_email_rounded,
-          onTap: () => _open(widget.accountsScreen(trail)),
-        ),
-        MenuRow(
-          '음성 설정',
-          '음성 모델, 목소리 변경',
-          icon: Icons.record_voice_over_outlined,
-          onTap: () => _open(widget.voiceScreen(trail)),
-        ),
-        MenuRow(
-          '알림 설정',
-          '새 메일 확인, 새 메일 알림',
-          icon: Icons.notifications_none_rounded,
-          onTap: () => _open(
-            NotificationSettingsScreen(
-              from: trail,
-              settings: _settings,
-              onChanged: _set,
+        MenuGroup(
+          children: [
+            MenuRow(
+              '메일 연동',
+              widget.accounts.isEmpty
+                  ? '아직 연결한 메일이 없어요'
+                  : [for (final a in widget.accounts) a.address].join('\n'),
+              icon: Icons.alternate_email_rounded,
+              onTap: () => _open(widget.accountsScreen(trail)),
             ),
-          ),
-        ),
-        MenuRow(
-          '도움말',
-          '오류 코드별 해결 방법',
-          icon: Icons.help_outline_rounded,
-          onTap: () => _open(HelpScreen(from: trail)),
+            MenuRow(
+              '음성 설정',
+              '음성 모델, 목소리 변경',
+              icon: Icons.record_voice_over_outlined,
+              onTap: () => _open(widget.voiceScreen(trail)),
+            ),
+            MenuRow(
+              '알림 설정',
+              '새 메일 확인, 새 메일 알림',
+              icon: Icons.notifications_none_rounded,
+              onTap: () => _open(
+                NotificationSettingsScreen(
+                  from: trail,
+                  settings: _settings,
+                  onChanged: _set,
+                ),
+              ),
+            ),
+            MenuRow(
+              '도움말',
+              '오류 코드별 해결 방법',
+              icon: Icons.help_outline_rounded,
+              onTap: () => _open(HelpScreen(from: trail)),
+            ),
+          ],
         ),
       ],
     );
@@ -154,25 +158,29 @@ class _NotificationSettingsScreenState
     children: [
       const ScreenTitle('알림 설정', '새 메일을 언제 알려 드릴까요?'),
       const SizedBox(height: 20),
-      MenuRow(
-        '새 메일 확인',
-        '홈의 안 읽은 메일 수를 다시 불러와요',
-        trailing: _choices(
-          _settings.checkMinutes,
-          const [(0, '끄기'), (5, '5분'), (15, '15분')],
-          (v) {
-            setState(() => _settings = _settings.copyWith(checkMinutes: v));
-            widget.onChanged(_settings);
-          },
-        ),
-      ),
-      MenuRow(
-        '새 메일 알림',
-        '새 메일이 오면 알려 드려요',
-        trailing: StatusChip(
-          '곧 지원',
-          Theme.of(context).colorScheme.onSurfaceVariant,
-        ),
+      MenuGroup(
+        children: [
+          MenuRow(
+            '새 메일 확인',
+            '홈의 안 읽은 메일 수를 다시 불러와요',
+            trailing: _choices(
+              _settings.checkMinutes,
+              const [(0, '끄기'), (5, '5분'), (15, '15분')],
+              (v) {
+                setState(() => _settings = _settings.copyWith(checkMinutes: v));
+                widget.onChanged(_settings);
+              },
+            ),
+          ),
+          MenuRow(
+            '새 메일 알림',
+            '새 메일이 오면 알려 드려요',
+            trailing: StatusChip(
+              '곧 지원',
+              Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
       ),
     ],
   );

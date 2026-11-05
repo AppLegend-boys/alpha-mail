@@ -38,28 +38,38 @@ class MailMenuScreen extends StatelessWidget {
       children: [
         const ScreenTitle('메일', '어떤 메일함을 열까요?'),
         const SizedBox(height: 20),
-        for (final (folder, icon, sub) in const [
-          (MailFolder.all, Icons.inbox_outlined, '받은 메일 모두'),
-          (MailFolder.unread, Icons.mark_email_unread_outlined, '아직 읽지 않은 메일'),
-          (MailFolder.sent, Icons.send_outlined, '내가 보낸 메일'),
-          (MailFolder.starred, Icons.star_outline_rounded, '별표·중요 표시한 메일'),
-          (MailFolder.trash, Icons.delete_outline_rounded, '지운 메일'),
-        ])
-          ListenableBuilder(
-            listenable: inbox,
-            builder: (context, _) => MenuRow(
-              folder == MailFolder.all ? '전체 메일함' : folder.label,
-              sub,
-              note: folder == MailFolder.unread && unreadCount() > 0
-                  ? '(${unreadCount()}건)'
-                  : null,
-              icon: icon,
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => folderScreen(folder, trail)),
+        MenuGroup(
+          children: [
+            for (final (folder, icon, sub) in const [
+              (MailFolder.all, Icons.inbox_outlined, '받은 메일 모두'),
+              (
+                MailFolder.unread,
+                Icons.mark_email_unread_outlined,
+                '아직 읽지 않은 메일',
               ),
-            ),
-          ),
+              (MailFolder.sent, Icons.send_outlined, '내가 보낸 메일'),
+              (MailFolder.starred, Icons.star_outline_rounded, '별표·중요 표시한 메일'),
+              (MailFolder.trash, Icons.delete_outline_rounded, '지운 메일'),
+            ])
+              ListenableBuilder(
+                listenable: inbox,
+                builder: (context, _) => MenuRow(
+                  folder == MailFolder.all ? '전체 메일함' : folder.label,
+                  sub,
+                  note: folder == MailFolder.unread && unreadCount() > 0
+                      ? '(${unreadCount()}건)'
+                      : null,
+                  icon: icon,
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => folderScreen(folder, trail),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
       ],
     );
   }
@@ -301,27 +311,41 @@ class _MailFolderScreenState extends State<MailFolderScreen> {
           _loading
               ? const Center(child: CircularProgressIndicator())
               : Text('메일이 없어요', textAlign: TextAlign.center, style: hint),
-        for (final (i, mail) in mails.indexed) ...[
-          if (i > 0) const SizedBox(height: 8),
-          MailTile(
-            mail,
-            read: _isRead(mail),
-            showSource: _only == null && accounts.length > 1,
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => BriefingScreen(
-                  from: [...widget.from, widget.folder.label],
-                  mails: mails,
-                  index: i,
-                  onRead: _onRead,
-                  autoRead: false,
-                  speech: widget.speech,
-                ),
-              ),
+        if (mails.isNotEmpty)
+          VoiceCard(
+            padding: EdgeInsets.zero,
+            child: Column(
+              children: [
+                for (final (i, mail) in mails.indexed) ...[
+                  if (i > 0)
+                    Divider(
+                      height: 0.5,
+                      thickness: 0.5,
+                      indent: 32,
+                      color: Theme.of(context).colorScheme.outlineVariant,
+                    ),
+                  MailTile(
+                    mail,
+                    read: _isRead(mail),
+                    showSource: _only == null && accounts.length > 1,
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => BriefingScreen(
+                          from: [...widget.from, widget.folder.label],
+                          mails: mails,
+                          index: i,
+                          onRead: _onRead,
+                          autoRead: false,
+                          speech: widget.speech,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
             ),
           ),
-        ],
         if (_loading && mails.isNotEmpty) ...[
           const SizedBox(height: 16),
           Text('다른 계정 메일을 불러오는 중…', textAlign: TextAlign.center, style: hint),
@@ -399,64 +423,103 @@ class MailTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final when = _when(mail.date);
-    return VoiceCard(
+    return InkWell(
       onTap: onTap,
-      // Read mails step back in weight and grey, not opacity, so their text
-      // keeps its contrast.
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  mail.from,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: read ? FontWeight.w500 : FontWeight.w700,
-                    color: read ? colors.onSurfaceVariant : null,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(0, 10, 16, 10),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Unread mail gets an ink dot, as in iOS Mail.
+            SizedBox(
+              width: 32,
+              child: Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Center(
+                  child: Container(
+                    width: 10,
+                    height: 10,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: read ? Colors.transparent : colors.primary,
+                    ),
                   ),
                 ),
               ),
-              // The badge stands for the service's name; example mails
-              // have no account, so they keep the name as text.
-              if (mail.account?.service case final service?
-                  when showSource) ...[
-                Semantics(
-                  label: service.label,
-                  child: ExcludeSemantics(
-                    child: ServiceBadge(service.mark, service.color, size: 14),
-                  ),
-                ),
-                const SizedBox(width: 4),
-              ],
-              Text(
-                showSource && mail.account == null
-                    ? '${mail.source}, $when'
-                    : when,
-                style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
-              ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Text(
-            mail.subject,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: 15,
-              color: read ? colors.onSurfaceVariant : null,
             ),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            mail.body.replaceAll(RegExp(r'\s+'), ' '),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
-          ),
-        ],
+            Expanded(
+              // Read mails step back in weight and grey, not opacity, so their text
+              // keeps its contrast.
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          mail.from,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: read
+                                ? FontWeight.w500
+                                : FontWeight.w700,
+                            color: read ? colors.onSurfaceVariant : null,
+                          ),
+                        ),
+                      ),
+                      // The badge stands for the service's name; example mails
+                      // have no account, so they keep the name as text.
+                      if (mail.account?.service case final service?
+                          when showSource) ...[
+                        Semantics(
+                          label: service.label,
+                          child: ExcludeSemantics(
+                            child: ServiceBadge(
+                              service.mark,
+                              service.color,
+                              size: 14,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                      ],
+                      Text(
+                        showSource && mail.account == null
+                            ? '${mail.source}, $when'
+                            : when,
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: colors.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    mail.subject,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 15,
+                      color: read ? colors.onSurfaceVariant : null,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    mail.body.replaceAll(RegExp(r'\s+'), ' '),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
