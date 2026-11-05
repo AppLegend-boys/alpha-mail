@@ -113,6 +113,11 @@ class MailAccount {
   /// Called after [secret] changes, to save the new one.
   static void Function()? onRenewed;
 
+  /// The last OAuth access token, reused until shortly before it expires
+  /// instead of asking Google or Microsoft again on every IMAP login.
+  String? _access;
+  DateTime _accessUntil = DateTime(0);
+
   String get id => address.split('@').first;
 
   /// Opens Google's or Microsoft's sign-in page and returns the account it
@@ -145,8 +150,28 @@ class MailAccount {
         : MailAccount.google(email, result.refreshToken!);
   }
 
+  /// flutter_appauth refuses a token request while another runs
+  /// ("Concurrent operations detected"), so Gmail and Outlook take turns.
+  static Future<void> _tokenTurn = Future.value();
+
   /// Trades the refresh token for a fresh hour-long access token.
   Future<String> _accessToken() async {
+    bool fresh() => _access != null && DateTime.now().isBefore(_accessUntil);
+    if (fresh()) return _access!;
+    final turn = _tokenTurn;
+    final done = Completer<void>();
+    _tokenTurn = done.future;
+    try {
+      await turn;
+      // Another login of this account may have renewed it meanwhile.
+      if (fresh()) return _access!;
+      return await _renewAccess();
+    } finally {
+      done.complete();
+    }
+  }
+
+  Future<String> _renewAccess() async {
     final (clientId, redirect, config, scopes) = _oauth(service);
     final token = await _appAuth
         .token(
@@ -165,7 +190,12 @@ class MailAccount {
       secret = renewed;
       onRenewed?.call();
     }
-    return token.accessToken!;
+    // A margin, so it doesn't run out between here and the login.
+    _accessUntil =
+        (token.accessTokenExpirationDateTime ??
+                DateTime.now().add(const Duration(minutes: 30)))
+            .subtract(const Duration(minutes: 5));
+    return _access = token.accessToken!;
   }
 
   /// Logs in to the IMAP server.
@@ -174,7 +204,13 @@ class MailAccount {
       case MailService.naver:
         await client.login(id, secret);
       case MailService.gmail || MailService.outlook:
-        await client.authenticateWithOAuth2(address, await _accessToken());
+        try {
+          await client.authenticateWithOAuth2(address, await _accessToken());
+        } catch (_) {
+          // A revoked token: ask for a new one next time.
+          _access = null;
+          rethrow;
+        }
     }
   }
 
@@ -308,13 +344,13 @@ class MailAccount {
           ]),
         );
 
-  /// Logs in, opens the inbox (or the sent folder) and runs [body],
-  /// logging out after.
+  /// Logs in, opens the inbox (or the sent or trash [folder]) and runs
+  /// [body], logging out after.
   // ponytail: a fresh IMAP login per call; keep one connection open if
   // reading many mails in a row gets slow.
   Future<T> _inInbox<T>(
     Future<T> Function(ImapClient client, Mailbox inbox) body, {
-    bool sent = false,
+    MailFolder folder = MailFolder.all,
   }) async {
     // Without a limit a server that stops answering left the app loading
     // forever; long enough for 20 whole mails with attachments.
@@ -323,10 +359,25 @@ class MailAccount {
     );
     try {
       await client.connectToServer(service.host, 993);
-      await _login(client);
-      final box = sent
-          ? await client.selectMailbox(await _sentBox(client))
-          : await client.selectInbox();
+      try {
+        await _login(client);
+      } on SocketException catch (e) {
+        // The server was reached, so a dropped line here is it refusing
+        // the login (Outlook hangs up when IMAP access isn't granted), not
+        // the phone being offline.
+        throw ImapException(client, 'login: $e');
+      } on TimeoutException catch (e) {
+        throw ImapException(client, 'login: $e');
+      }
+      final box = switch (folder) {
+        MailFolder.sent => await client.selectMailbox(
+          await _box(client, (b) => b.isSent, 'sent|보낸'),
+        ),
+        MailFolder.trash => await client.selectMailbox(
+          await _box(client, (b) => b.isTrash, 'trash|deleted|휴지통'),
+        ),
+        _ => await client.selectInbox(),
+      };
       return await body(client, box);
     } finally {
       if (client.isLoggedIn) await client.logout().catchError((_) {});
@@ -345,13 +396,22 @@ class MailAccount {
     (client, _) => client.uidMarkSeen(MessageSequence.fromId(uid, isUid: true)),
   );
 
-  /// The newest [limit] inbox (or [sent]) mails, read or not, newest first;
-  /// with [before], the ones older than that UID (더 보기).
+  /// Starred inbox mails (\\Flagged: Gmail's star, Naver's 중요 메일), like
+  /// [fetchUnread].
+  // shortcut: inbox only; Gmail stars in other labels are missed, search
+  // [Gmail]/All Mail if users ask for them.
+  Future<Unread> fetchStarred({int limit = 20, int? before}) => _inInbox(
+    (client, _) => _newest(client, 'FLAGGED', limit, before: before),
+  );
+
+  /// The newest [limit] mails of the inbox (or the sent or trash [folder]),
+  /// read or not, newest first; with [before], the ones older than that UID
+  /// (더 보기).
   Future<List<Mail>> fetchRecent({
     int limit = 20,
-    bool sent = false,
+    MailFolder folder = MailFolder.all,
     int? before,
-  }) => _inInbox(sent: sent, (client, box) async {
+  }) => _inInbox(folder: folder, (client, box) async {
     if (box.messagesExists == 0) return <Mail>[];
     if (before != null) {
       return (await _newest(
@@ -359,15 +419,25 @@ class MailAccount {
         'ALL',
         limit,
         before: before,
-        sent: sent,
+        folder: folder,
       )).mails;
     }
-    final fetched = await client.fetchRecentMessages(
+    final listed = await client.fetchRecentMessages(
       messageCount: limit,
-      criteria: '(UID FLAGS BODY.PEEK[])',
+      criteria: _listItems,
     );
-    return [for (final m in fetched.messages.reversed) _toMail(m, sent: sent)];
+    return _forList(client, listed.messages, folder);
   });
+
+  /// [mail] whole, with the HTML and attachments a list leaves out.
+  Future<Mail> fetchWhole(Mail mail) =>
+      _inInbox(folder: mail.folder, (client, _) async {
+        final fetched = await client.uidFetchMessage(
+          mail.uid!,
+          '(UID FLAGS BODY.PEEK[])',
+        );
+        return _toMail(fetched.messages.single, folder: mail.folder);
+      });
 
   /// How many mails match [criteria] (below UID [before], when given), with
   /// the newest [limit] fetched whole, newest first.
@@ -376,7 +446,7 @@ class MailAccount {
     String criteria,
     int limit, {
     int? before,
-    bool sent = false,
+    MailFolder folder = MailFolder.all,
   }) async {
     if (before != null) {
       // Nothing is older than UID 1, and "UID 1:0" is not a valid range.
@@ -393,29 +463,113 @@ class MailAccount {
     ]..sort();
     if (ids.isEmpty) return (total: 0, mails: <Mail>[]);
     final newest = ids.sublist(ids.length > limit ? ids.length - limit : 0);
-    final fetched = await client.uidFetchMessages(
+    final listed = await client.uidFetchMessages(
       MessageSequence.fromIds(newest, isUid: true),
-      '(UID FLAGS BODY.PEEK[])',
+      _listItems,
     );
-    final mails = [for (final m in fetched.messages) _toMail(m, sent: sent)]
-      ..sort((a, b) => b.uid!.compareTo(a.uid!));
-    return (total: ids.length, mails: mails);
+    return (
+      total: ids.length,
+      mails: await _forList(client, listed.messages, folder),
+    );
   }
 
-  /// The sent folder: flagged \Sent where the server supports that (Gmail),
-  /// else found by name ("Sent Messages" on Naver).
-  static Future<Mailbox> _sentBox(ImapClient client) async {
+  /// What a list fetches first: the headers, and the structure to pick
+  /// the text part from.
+  static const _listItems =
+      '(UID FLAGS RFC822.SIZE BODYSTRUCTURE BODY.PEEK[HEADER])';
+
+  /// One-part mails up to this size come whole; there's nothing to leave
+  /// out of them.
+  static const _wholeLimit = 100 * 1024;
+
+  /// The [listed] mails (fetched with [_listItems]) for a list, newest
+  /// first: with only their text part, the HTML and attachments left to
+  /// fetch when opened ([fetchWhole]).
+  Future<List<Mail>> _forList(
+    ImapClient client,
+    List<MimeMessage> listed,
+    MailFolder folder,
+  ) async {
+    final whole = {
+      for (final m in listed)
+        if (m.body?.parts?.isNotEmpty != true && (m.size ?? 0) <= _wholeLimit)
+          m.uid!,
+    };
+    final mails = [
+      if (whole.isNotEmpty)
+        for (final m in (await client.uidFetchMessages(
+          MessageSequence.fromIds([...whole], isUid: true),
+          '(UID FLAGS BODY.PEEK[])',
+        )).messages)
+          _toMail(m, folder: folder),
+    ];
+    final rest = [
+      for (final m in listed)
+        if (!whole.contains(m.uid)) m,
+    ];
+    // Text parts by part number, so mails sharing one ("1", "1.1") come in
+    // a single fetch instead of one each.
+    final texts = <String, List<(MimeMessage, BodyPart)>>{};
+    for (final m in rest) {
+      final text =
+          m.body?.findFirst(MediaSubtype.textPlain) ??
+          m.body?.findFirst(MediaSubtype.textHtml);
+      // shortcut: a big mail that is one part (no fetch ID) shows no
+      // preview until opened.
+      if (text?.fetchId case final id?) (texts[id] ??= []).add((m, text!));
+    }
+    final previews = <int, String>{};
+    for (final MapEntry(key: id, value: parts) in texts.entries) {
+      final fetched = {
+        for (final f in (await client.uidFetchMessages(
+          MessageSequence.fromIds([
+            for (final (m, _) in parts) m.uid!,
+          ], isUid: true),
+          '(UID BODY.PEEK[$id])',
+        )).messages)
+          f.uid: f,
+      };
+      for (final (m, text) in parts) {
+        if (fetched[m.uid]?.getPart(id) case final part?) {
+          m.setPart(id, part);
+          final body = _asKorean(part) ?? part.decodeContentText() ?? '';
+          previews[m.uid!] =
+              text.contentType?.mediaType.sub == MediaSubtype.textHtml
+              ? htmlToText(body)
+              : body;
+        }
+      }
+    }
+    for (final m in rest) {
+      mails.add(_toMail(m, folder: folder, preview: previews[m.uid] ?? ''));
+    }
+    return mails..sort((a, b) => b.uid!.compareTo(a.uid!));
+  }
+
+  /// A special folder: flagged (\Sent, \Trash) where the server supports
+  /// that (Gmail), else found by [name] ("Sent Messages" on Naver).
+  static Future<Mailbox> _box(
+    ImapClient client,
+    bool Function(Mailbox) flagged,
+    String name,
+  ) async {
     final boxes = await client.listMailboxes(recursive: true);
-    final byName = RegExp('sent|보낸', caseSensitive: false);
-    return boxes.where((b) => b.isSent).firstOrNull ??
+    final byName = RegExp(name, caseSensitive: false);
+    return boxes.where(flagged).firstOrNull ??
         boxes.firstWhere((b) => byName.hasMatch(b.name));
   }
 
-  /// [sent] mails show who they went to in place of the sender.
-  Mail _toMail(MimeMessage m, {bool sent = false}) {
+  /// Sent mails show who they went to in place of the sender.
+  /// With [preview], [m] has only its headers and that is its text.
+  Mail _toMail(
+    MimeMessage m, {
+    MailFolder folder = MailFolder.all,
+    String? preview,
+  }) {
+    final sent = folder == MailFolder.sent;
     final from = (sent ? m.to : m.from)?.firstOrNull;
-    final text = koreanText(m, MediaSubtype.textPlain);
-    final html = koreanText(m, MediaSubtype.textHtml);
+    final text = preview ?? koreanText(m, MediaSubtype.textPlain);
+    final html = preview != null ? null : koreanText(m, MediaSubtype.textHtml);
     final name = from?.personalName?.trim().isNotEmpty == true
         ? koreanHeader(from!.personalName!.trim())
         : from?.email;
@@ -437,9 +591,12 @@ class MailAccount {
       date: m.decodeDate(),
       account: this,
       uid: m.uid,
-      // Never mark sent mail read; it is the user's own.
-      seen: sent || m.isSeen,
+      // Never mark sent mail read; it is the user's own. Trash UIDs aren't
+      // the inbox's, where marking read goes.
+      seen: sent || folder == MailFolder.trash || m.isSeen,
       messageId: m.getHeaderValue('message-id')?.trim(),
+      partial: preview != null,
+      folder: folder,
     );
   }
 
@@ -458,7 +615,8 @@ class MailAccount {
 
 /// Plain Korean message for a failed connect, for the connect screen.
 String mailError(MailService service, Object error) => switch (error) {
-  SocketException() || TimeoutException() => '인터넷 연결을 확인해 주세요.',
+  // Codes are explained in screens/help.dart.
+  SocketException() || TimeoutException() => '인터넷 연결을 확인해 주세요. (C-01)',
   FlutterAppAuthUserCancelledException() => switch (service) {
     MailService.outlook => '마이크로소프트 로그인을 취소했어요.',
     _ => '구글 로그인을 취소했어요.',
@@ -468,17 +626,11 @@ String mailError(MailService service, Object error) => switch (error) {
   ImapException() ||
   SmtpException() ||
   FlutterAppAuthPlatformException() => switch (service) {
-    MailService.naver =>
-      '로그인하지 못했어요. 평소 비밀번호가 아니라 애플리케이션 비밀번호를 넣었는지, '
-          '네이버 메일에서 IMAP/SMTP 사용을 켰는지 확인해 주세요.',
-    MailService.gmail =>
-      '구글 로그인에 실패했어요. 다시 연결해 주세요. '
-          '회사·학교 계정은 관리자가 외부 앱의 메일 접근을 막아 두었을 수 있어요.',
-    MailService.outlook =>
-      '마이크로소프트 로그인에 실패했어요. 다시 연결해 주세요. '
-          '회사·학교 계정은 관리자가 IMAP·SMTP 접근을 막아 두었을 수 있어요.',
+    MailService.naver => '네이버 로그인에 실패했어요. (L-01)',
+    MailService.gmail => '구글 로그인에 실패했어요. (L-02)',
+    MailService.outlook => '마이크로소프트 로그인에 실패했어요. (L-03)',
   },
-  _ => '${service.label}에 연결하지 못했어요. 잠시 후 다시 시도해 주세요.',
+  _ => '${service.label}에 연결하지 못했어요. (C-02)',
 };
 
 // ponytail: regex HTML stripping, enough to read a mail aloud; tables and
@@ -534,12 +686,17 @@ String koreanHeader(String header) =>
 
 /// The text/plain or text/html body, read as EUC-KR when it is declared so.
 String? koreanText(MimeMessage m, MediaSubtype subtype) {
-  final decoded = subtype == MediaSubtype.textPlain
-      ? m.decodeTextPlainPart()
-      : m.decodeTextHtmlPart();
   final part = _findPart(m, subtype);
-  final charset = part?.getHeaderContentType()?.charset?.toLowerCase();
-  if (part == null || !_koreanCharsets.contains(charset)) return decoded;
+  return (part == null ? null : _asKorean(part)) ??
+      (subtype == MediaSubtype.textPlain
+          ? m.decodeTextPlainPart()
+          : m.decodeTextHtmlPart());
+}
+
+/// [part]'s text if it is declared EUC-KR, which enough_mail misreads.
+String? _asKorean(MimePart part) {
+  final charset = part.getHeaderContentType()?.charset?.toLowerCase();
+  if (!_koreanCharsets.contains(charset)) return null;
   final encoding = part
       .getHeaderValue('content-transfer-encoding')
       ?.trim()
@@ -547,7 +704,7 @@ String? koreanText(MimeMessage m, MediaSubtype subtype) {
   final bytes = encoding == 'quoted-printable'
       ? _quotedBytes(part.mimeData?.decodeText(null, null) ?? '')
       : part.decodeContentBinary();
-  return bytes == null ? decoded : cp949.decode(bytes);
+  return bytes == null ? null : cp949.decode(bytes);
 }
 
 /// The part [MimePart.decodeTextPlainPart] reads: the first one, depth first.

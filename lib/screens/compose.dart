@@ -7,6 +7,7 @@ import '../mail/mail_account.dart';
 import '../voice/speech.dart';
 import '../voice/tts.dart';
 import '../widgets.dart';
+import 'help.dart';
 
 enum SendAnswer { yes, no, again, unclear }
 
@@ -15,6 +16,17 @@ enum SendAnswer { yes, no, again, unclear }
 // the whole answer.
 final _no = RegExp(r'취소|그만|나중|아니|말아|보내지\s*마');
 final _again = RegExp(r'다시');
+
+/// Mail domains offered after the recipient's ID, most used in Korea first.
+const _domains = [
+  'naver.com',
+  'gmail.com',
+  'daum.net',
+  'hanmail.net',
+  'kakao.com',
+  'nate.com',
+  'outlook.com',
+];
 final _yes = RegExp(r'보내|^\s*(응|네|예)\s*[.!?]?\s*$');
 
 /// Reads the answer to 보낼까요?. Only a clear yes sends.
@@ -105,6 +117,19 @@ class ComposeScreen extends StatefulWidget {
 class _ComposeScreenState extends State<ComposeScreen> {
   final _reader = Reader.instance;
   late final _to = TextEditingController(text: widget.mail?.address);
+
+  /// Picked from the menu beside 받는 사람, joined to the ID at send time.
+  String? _domain;
+
+  /// The recipient: the field as typed, plus [_domain] when it holds only an
+  /// ID.
+  String get _address {
+    final typed = _to.text.trim();
+    return typed.isEmpty || typed.contains('@') || _domain == null
+        ? typed
+        : '$typed@$_domain';
+  }
+
   late final _subject = TextEditingController(
     text: switch (widget.mail?.subject) {
       null => '',
@@ -167,8 +192,7 @@ class _ComposeScreenState extends State<ComposeScreen> {
 
   void _redraw() => setState(() {});
 
-  void _snack(String text) =>
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  void _snack(String text) => showProblem(context, text);
 
   /// Takes the mic's speech callback from home, which would otherwise hear
   /// "응" in the reply as its own command.
@@ -280,13 +304,13 @@ class _ComposeScreenState extends State<ComposeScreen> {
     setState(() => _step = _Step.talking);
     await _mute();
     if (!mounted || _step != _Step.talking) return;
-    if (_to.text.trim().isEmpty) {
+    if (_address.isEmpty) {
       _asked = 0;
       return _retry('누구에게 보낼까요? 이름이나 메일 주소를 말씀해 주세요.', _Step.naming);
     }
     // The recipient is read out too: a misheard name must not slip by.
     if (!await _say(
-      '${_to.text.trim()}에게 이렇게 보낼게요. ${_body.text.trim()}. '
+      '$_address에게 이렇게 보낼게요. ${_body.text.trim()}. '
       '보낼까요? 보내, 다시, 취소 중에 말씀해 주세요.',
     )) {
       return;
@@ -316,7 +340,10 @@ class _ComposeScreenState extends State<ComposeScreen> {
   void _name(String said) {
     if (findRecipient(said, widget.contacts, me: _sender?.address)
         case final address?) {
-      _to.text = address;
+      setState(() {
+        _to.text = address;
+        _domain = null;
+      });
       _asked = 0;
       _confirm();
     } else if (++_asked > 2) {
@@ -352,12 +379,12 @@ class _ComposeScreenState extends State<ComposeScreen> {
   /// [_stop], saying why aloud: the user may not be looking.
   void _stopSaying(String note) {
     _stop(note);
-    _reader.speak(note);
+    _reader.speak(withoutCode(note));
   }
 
   Future<void> _send({bool byVoice = false}) async {
     final sender = _sender;
-    final to = _to.text.trim();
+    final to = _address;
     final messenger = ScaffoldMessenger.of(context);
     void fail(String message) {
       if (byVoice) return _stopSaying(message);
@@ -409,7 +436,7 @@ class _ComposeScreenState extends State<ComposeScreen> {
     _Step.dictating => ('듣고 있어요', '다 말씀하시고 잠시 멈추면 읽어 드려요'),
     _Step.naming => ('누구에게 보낼까요?', '이름, 메일 주소, 또는 "나한테"'),
     _Step.confirming => ('보낼까요?', '"보내", "다시", "취소"로 말씀해 주세요'),
-    _Step.sending => ('보내는 중이에요', _to.text.trim()),
+    _Step.sending => ('보내는 중이에요', _address),
     _Step.idle => switch (_note) {
       final note? => (note, '마이크를 누르면 다시 말로 쓸 수 있어요'),
       null => null,
@@ -443,7 +470,8 @@ class _ComposeScreenState extends State<ComposeScreen> {
       children: [
         if (_status case (final title, final hint)) ...[
           VoiceCard(
-            borderColor: running ? colors.primary : null,
+            // Ink-tinted while the voice flow runs, as mockup B's 듣고 있어요.
+            color: running ? colors.primaryContainer : null,
             child: Semantics(
               liveRegion: true,
               child: Row(
@@ -473,78 +501,149 @@ class _ComposeScreenState extends State<ComposeScreen> {
               ),
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 12),
         ],
-        // One line per header, like a mail app's compose screen.
-        for (final (label, field) in [
-          (
-            '보내는 사람',
-            !reply && widget.accounts.length > 1
-                ? DropdownButton<MailAccount>(
-                    value: _sender,
-                    isDense: true,
-                    isExpanded: true,
-                    underline: const SizedBox(),
-                    style: text.copyWith(color: colors.onSurface),
-                    items: [
-                      for (final a in widget.accounts)
-                        DropdownMenuItem(value: a, child: Text(a.address)),
-                    ],
-                    onChanged: (a) => setState(() => _sender = a),
-                  )
-                : Text(_sender?.address ?? '예시 계정', style: text),
-          ),
-          (
-            '받는 사람',
-            TextField(
-              controller: _to,
-              style: text,
-              keyboardType: TextInputType.emailAddress,
-              onChanged: _edited,
-              decoration: bare.copyWith(hintText: '메일 주소'),
-            ),
-          ),
-          (
-            '제목',
-            TextField(
-              controller: _subject,
-              style: text,
-              onChanged: _edited,
-              decoration: bare,
-            ),
-          ),
-        ]) ...[
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            child: Row(
-              children: [
-                SizedBox(
-                  width: 84,
-                  child: Text(
-                    label,
-                    style: TextStyle(
-                      fontSize: 15,
-                      color: colors.onSurfaceVariant,
+        // The headers and the body in one white group, a line per header,
+        // like a mail app's compose screen.
+        MenuGroup(
+          indent: 16,
+          bottom: 0,
+          children: [
+            for (final (label, field) in [
+              (
+                '보내는 사람',
+                !reply && widget.accounts.length > 1
+                    ? DropdownButton<MailAccount>(
+                        value: _sender,
+                        isDense: true,
+                        isExpanded: true,
+                        underline: const SizedBox(),
+                        style: text.copyWith(color: colors.onSurface),
+                        items: [
+                          for (final a in widget.accounts)
+                            DropdownMenuItem(value: a, child: Text(a.address)),
+                        ],
+                        onChanged: (a) => setState(() => _sender = a),
+                      )
+                    : Text(_sender?.address ?? '예시 계정', style: text),
+              ),
+              (
+                '받는 사람',
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _to,
+                        style: text,
+                        keyboardType: TextInputType.emailAddress,
+                        onChanged: (typed) {
+                          // A typed @ means a whole address; the menu steps aside.
+                          if (typed.contains('@') && _domain != null) {
+                            setState(() => _domain = null);
+                          }
+                          _edited(typed);
+                        },
+                        decoration: bare.copyWith(
+                          hintText: _domain == null ? '메일 주소' : '아이디',
+                        ),
+                      ),
                     ),
-                  ),
+                    // The field keeps the ID; the address after @ sits here
+                    // until sending. Empty means 직접 입력.
+                    PopupMenuButton<String>(
+                      tooltip: '@ 뒤 주소 고르기',
+                      onSelected: (domain) {
+                        // 직접 입력 puts the whole address in the field to edit;
+                        // a domain keeps only the ID.
+                        final typed = domain.isEmpty
+                            ? _address
+                            : _to.text.trim().split('@').first;
+                        _to.value = TextEditingValue(
+                          text: typed,
+                          selection: TextSelection.collapsed(
+                            offset: typed.length,
+                          ),
+                        );
+                        setState(
+                          () => _domain = domain.isEmpty ? null : domain,
+                        );
+                        _edited(typed);
+                      },
+                      itemBuilder: (_) => [
+                        for (final d in _domains)
+                          PopupMenuItem(value: d, child: Text('@$d')),
+                        const PopupMenuItem(value: '', child: Text('직접 입력')),
+                      ],
+                      child: Padding(
+                        padding: const EdgeInsets.only(left: 8),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              _domain == null ? '@주소' : '@$_domain',
+                              style: _domain == null
+                                  ? TextStyle(
+                                      fontSize: 15,
+                                      color: colors.onSurfaceVariant,
+                                    )
+                                  : text,
+                            ),
+                            Icon(
+                              Icons.arrow_drop_down_rounded,
+                              color: colors.onSurfaceVariant,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-                Expanded(child: field),
-              ],
+              ),
+              (
+                '제목',
+                TextField(
+                  controller: _subject,
+                  style: text,
+                  onChanged: _edited,
+                  decoration: bare,
+                ),
+              ),
+            ])
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 14,
+                ),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 84,
+                      child: Text(
+                        label,
+                        style: TextStyle(
+                          fontSize: 15,
+                          color: colors.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                    Expanded(child: field),
+                  ],
+                ),
+              ),
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: TextField(
+                controller: _body,
+                minLines: 8,
+                maxLines: null,
+                keyboardType: TextInputType.multiline,
+                onChanged: _edited,
+                style: const TextStyle(fontSize: 17, height: 1.6),
+                decoration: bare.copyWith(hintText: '내용을 입력하세요'),
+              ),
             ),
-          ),
-          Divider(height: 1, color: colors.outlineVariant),
-        ],
-        const SizedBox(height: 12),
-        TextField(
-          controller: _body,
-          minLines: 8,
-          maxLines: null,
-          keyboardType: TextInputType.multiline,
-          onChanged: _edited,
-          style: const TextStyle(fontSize: 17, height: 1.6),
-          decoration: bare.copyWith(hintText: '내용을 입력하세요'),
+          ],
         ),
-        Divider(height: 1, color: colors.outlineVariant),
         // Room so the last line can scroll out from under the send pill.
         const SizedBox(height: 104),
       ],

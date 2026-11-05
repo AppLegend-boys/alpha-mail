@@ -1,9 +1,12 @@
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:alpha_mail/voice/speech.dart';
 import 'package:alpha_mail/mail/mail_account.dart';
 import 'package:alpha_mail/screens/compose.dart';
+import 'package:alpha_mail/screens/help.dart';
 import 'package:alpha_mail/screens/mail_view.dart';
+import 'package:alpha_mail/voice/tts.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -84,6 +87,79 @@ void main() {
     expect(findRecipient('나한테', contacts), isNull);
   });
 
+  test('speakable puts what the voice would spell out into words', () {
+    expect(
+      speakable('회의는 2026.11.11 14:30, 문의 010-1234-5678'),
+      '회의는 2026년 11월 11일 14시 30분, 문의 공일공, 일이삼사, 오육칠팔',
+    );
+    expect(
+      speakable('hong@naver.com 으로 회신 😀👍🏻'),
+      'hong 골뱅이 naver.com 으로 회신 ',
+    );
+    expect(
+      speakable('₩10,000 / \$5 / 3~5일 ㅋㅋㅋ!!!'),
+      '10,000원 / 5달러 / 3에서 5일 !',
+    );
+    expect(speakable('=====\n★ 공지 ★\nhttps://a.com/x'), ' \n 공지 \n링크');
+    expect(speakable('9:00 출발'), '9시 출발');
+  });
+
+  test('spokenBody leaves out quoted mail, signature and footer', () {
+    expect(
+      spokenBody(
+        '네 좋아요.\n\n2026년 11월 1일 (일) 오후 3:00, 홍길동 <a@b.com>님이 작성:\n> 내일 볼까요?',
+      ),
+      '네 좋아요.',
+    );
+    expect(spokenBody('확인했습니다.\n-- \n홍길동 드림'), '확인했습니다.');
+    expect(spokenBody('고마워요\niPhone에서 보냄'), '고마워요');
+    expect(
+      spokenBody('이번 주 소식\n본문 하나\n본문 둘\n본문 셋\n수신거부는 여기\n주소'),
+      '이번 주 소식\n본문 하나\n본문 둘\n본문 셋',
+    );
+    // Nothing would be left: read it all.
+    expect(spokenBody('보낸 사람: 홍길동\n안녕'), '보낸 사람: 홍길동\n안녕');
+  });
+
+  test('code review cases: what reading aloud got wrong', () {
+    // 1. A line over the cap must not jump ahead of the lines before it.
+    final long = '가' * 1500;
+    expect(speechParts('인사\n$long').toList(), [
+      '인사\n',
+      '가' * 1000,
+      '${'가' * 500}\n',
+    ]);
+    // 2. IMAP bodies keep CRLF; the signature still goes.
+    expect(spokenBody('확인했습니다.\r\n-- \r\n홍길동 010-1234-5678'), '확인했습니다.');
+    // 3. Ordinary lines that only look like a quote or a footer stay.
+    expect(
+      spokenBody('일정 안내\nFrom: ICN  To: NRT\n출발 9시'),
+      '일정 안내\nFrom: ICN  To: NRT\n출발 9시',
+    );
+    expect(
+      spokenBody('하나\n둘\nHere is what he wrote:\n그 내용'),
+      '하나\n둘\nHere is what he wrote:\n그 내용',
+    );
+    expect(
+      spokenBody('하나\n둘\n셋\n광고 수신거부 요청드립니다\n감사합니다'),
+      '하나\n둘\n셋\n광고 수신거부 요청드립니다\n감사합니다',
+    );
+    // ...while real Outlook and Gmail quote headers still cut.
+    expect(spokenBody('네.\nFrom: 홍길동 <a@b.com>\nSent: Monday\n이전 내용'), '네.');
+    expect(
+      spokenBody(
+        '네.\nOn Mon, Nov 2, 2026 at 3:00 PM Hong <a@b.com> wrote:\n> x',
+      ),
+      '네.',
+    );
+    // 5. Years and price ranges are not phone numbers; 1588 numbers are.
+    expect(speakable('1990-2000년대'), '1990-2000년대');
+    expect(speakable('1500-2000원'), '1500-2000원');
+    expect(speakable('고객센터 1588-1234'), '고객센터 일오팔팔, 일이삼사');
+    // 6. A time range keeps its 에서.
+    expect(speakable('10:00~12:00'), '10시에서 12시');
+  });
+
   test('htmlToText keeps line breaks and drops markup', () {
     const html =
         '<html><head><style>p{color:red}</style></head><body>'
@@ -123,5 +199,25 @@ void main() {
       (MailService.outlook, 'minji@outlook.com'),
     );
     expect(MailAccount.fromJson({'nope': 1}), isNull);
+  });
+
+  test('every error code in a message is explained in 도움말', () {
+    final message = mailError(MailService.naver, const SocketException('down'));
+    expect(problemCode('a@naver.com: $message'), 'C-01');
+    expect(withoutCode(message), '인터넷 연결을 확인해 주세요.');
+    expect(problemCode('안 읽은 메일이 없어요'), isNull);
+    // Codes written in the sources must all be in the table.
+    final used = {
+      for (final f in Directory('lib').listSync(recursive: true))
+        if (f is File &&
+            f.path.endsWith('.dart') &&
+            !f.path.endsWith('help.dart'))
+          for (final m in RegExp(
+            r"\(([A-Z]-\d\d)\)'",
+          ).allMatches(f.readAsStringSync()))
+            m[1]!,
+    };
+    expect(used, isNotEmpty);
+    expect(problems.keys, containsAll(used));
   });
 }

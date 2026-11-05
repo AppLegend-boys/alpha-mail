@@ -6,10 +6,12 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../mail/mail.dart';
+import '../mail/mail_account.dart';
 import '../voice/speech.dart';
 import '../mail/summary.dart';
 import '../voice/tts.dart';
 import '../widgets.dart';
+import 'help.dart';
 
 /// 03 — reads one unread mail aloud, with a waveform while it plays.
 /// Whether [said] asks to skip to the next mail. Only a bare "다음" counts:
@@ -62,11 +64,38 @@ class _BriefingScreenState extends State<BriefingScreen>
   );
   final _reader = Reader.instance;
 
+  /// Mails the list fetched without attachments, once fetched whole.
+  final _fetching = <int, Future<Mail>>{};
+  final _loaded = <int, Mail>{};
+
+  /// Mail [i], fetched whole first if the list only had its text. A failed
+  /// fetch keeps the text, so it can still be read aloud.
+  Future<Mail> _load(int i) {
+    final mail = widget.mails[i];
+    if (!mail.partial) return Future.value(mail);
+    return _fetching[i] ??= mail.account!
+        .fetchWhole(mail)
+        .then(
+          (whole) {
+            if (mounted) setState(() => _loaded[i] = whole);
+            return whole;
+          },
+          onError: (Object e) {
+            if (mounted) {
+              setState(() => _fetching.remove(i));
+              showProblem(context, mailError(mail.account!.service, e));
+            }
+            return mail;
+          },
+        );
+  }
+
   @override
   void initState() {
     super.initState();
     _reader.speaking.addListener(_syncWave);
     markRead(widget.mails[_index], widget.onRead);
+    _load(_index);
     if (widget.autoRead) {
       _read();
       _hearNext();
@@ -83,14 +112,19 @@ class _BriefingScreenState extends State<BriefingScreen>
   }
 
   void _syncWave() {
-    _reader.speaking.value ? _wave.repeat() : _wave.stop();
+    // The wave holds still under the phone's reduce-motion setting.
+    _reader.speaking.value && !MediaQuery.disableAnimationsOf(context)
+        ? _wave.repeat()
+        : _wave.stop();
     setState(() {});
   }
 
   /// Reads who and what, then the AI summary once it's written (the whole
   /// body if [whole], or the summary model isn't downloaded or fails).
   Future<void> _read({bool next = false, bool whole = false}) async {
-    final mail = widget.mails[_index];
+    final i = _index;
+    final mail = await _load(i);
+    if (!mounted || _index != i) return;
     final summarizer = Summarizer.instance;
     final rest = !whole && await summarizer.installed
         ? summarizer
@@ -104,7 +138,7 @@ class _BriefingScreenState extends State<BriefingScreen>
                 },
               )
         : Future.value(spokenBody(mail.body));
-    if (!mounted || widget.mails[_index] != mail) return;
+    if (!mounted || _index != i) return;
     final problem = await _reader.speak(
       // Not "다음 메일": the mic listening for "다음" would hear it.
       '${next ? '이어서 읽을게요.\n' : ''}${mail.from}.\n${mail.subject}.',
@@ -113,10 +147,8 @@ class _BriefingScreenState extends State<BriefingScreen>
     // Cut off by a tap or another read: that one decides what comes next.
     if (!mounted || problem == Reader.cut) return;
     if (problem != null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(problem)));
-    } else if (_auto && widget.mails[_index] == mail) {
+      showProblem(context, problem);
+    } else if (_auto && _index == i) {
       _readNext();
     }
   }
@@ -194,7 +226,7 @@ class _BriefingScreenState extends State<BriefingScreen>
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final mail = widget.mails[_index];
+    final mail = _loaded[_index] ?? widget.mails[_index];
     return AppPage(
       trail: [...widget.from, '메일 내용'],
       children: [
@@ -205,7 +237,7 @@ class _BriefingScreenState extends State<BriefingScreen>
             borderRadius: BorderRadius.circular(10),
           ),
           child: Text(
-            '${mail.source} · ${_index + 1} / ${widget.mails.length}',
+            '${mail.source}, ${_index + 1} / ${widget.mails.length}',
             style: TextStyle(
               fontSize: 14,
               fontWeight: FontWeight.w700,
@@ -226,87 +258,95 @@ class _BriefingScreenState extends State<BriefingScreen>
         const SizedBox(height: 16),
         Divider(color: colors.outlineVariant),
         const SizedBox(height: 16),
-        _SummaryCard(
-          mail,
-          listen: (summaryReady) => _reader.speaking.value
-              ? Row(
-                  children: [
-                    Expanded(
-                      child: SizedBox(
-                        height: 32,
-                        child: AnimatedBuilder(
-                          animation: _wave,
-                          builder: (context, _) => CustomPaint(
-                            painter: _WavePainter(_wave.value, colors.primary),
+        // Summarising only the text part would cache a summary of it.
+        if (mail.partial && _fetching.containsKey(_index))
+          const Center(child: CircularProgressIndicator())
+        else ...[
+          _SummaryCard(
+            mail,
+            listen: (summaryReady) => _reader.speaking.value
+                ? Row(
+                    children: [
+                      Expanded(
+                        child: SizedBox(
+                          height: 32,
+                          child: AnimatedBuilder(
+                            animation: _wave,
+                            builder: (context, _) => CustomPaint(
+                              painter: _WavePainter(
+                                _wave.value,
+                                colors.primary,
+                              ),
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 10),
-                    Text(
-                      widget.speech?.onSpeech == _onSpeech
-                          ? '"다음" 하면 넘겨요'
-                          : _whole
-                          ? '전체 읽는 중'
-                          : '요약 읽는 중',
-                      style: TextStyle(color: colors.onSurfaceVariant),
-                    ),
-                    const SizedBox(width: 10),
-                    FilledButton.icon(
-                      // The theme's full-width minimum breaks inside a Row.
-                      style: FilledButton.styleFrom(
-                        minimumSize: const Size(0, 44),
+                      const SizedBox(width: 10),
+                      Text(
+                        widget.speech?.onSpeech == _onSpeech
+                            ? '"다음" 하면 넘겨요'
+                            : _whole
+                            ? '전체 읽는 중'
+                            : '요약 읽는 중',
+                        style: TextStyle(color: colors.onSurfaceVariant),
                       ),
-                      onPressed: _stopReading,
-                      icon: const Icon(Icons.stop_rounded),
-                      label: const Text('멈추기'),
-                    ),
-                  ],
-                )
-              : Row(
-                  children: [
-                    Expanded(
-                      child: FilledButton.icon(
-                        // Reads the whole body anyway while there's no summary.
-                        onPressed: summaryReady
-                            ? () => _listen(whole: false)
-                            : null,
-                        icon: const Icon(Icons.play_arrow_rounded),
-                        label: const Text('요약 듣기'),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        // Same box as the filled 요약 듣기 beside it.
-                        style: OutlinedButton.styleFrom(
-                          minimumSize: const Size.fromHeight(56),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          side: BorderSide(color: colors.outlineVariant),
-                          textStyle: const TextStyle(
-                            fontSize: 17,
-                            fontWeight: FontWeight.w700,
-                          ),
+                      const SizedBox(width: 10),
+                      FilledButton.icon(
+                        // The theme's full-width minimum breaks inside a Row.
+                        style: FilledButton.styleFrom(
+                          minimumSize: const Size(0, 44),
                         ),
-                        onPressed: () => _listen(whole: true),
-                        icon: const Icon(Icons.play_arrow_rounded),
-                        label: Text(
-                          mail.length.isEmpty
-                              ? '전체 듣기'
-                              : '전체 듣기 ${mail.length}',
+                        onPressed: _stopReading,
+                        icon: const Icon(Icons.stop_rounded),
+                        label: const Text('멈추기'),
+                      ),
+                    ],
+                  )
+                : Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton.icon(
+                          // Reads the whole body anyway while there's no summary.
+                          onPressed: summaryReady
+                              ? () => _listen(whole: false)
+                              : null,
+                          icon: const Icon(Icons.play_arrow_rounded),
+                          label: const Text('요약 듣기'),
                         ),
                       ),
-                    ),
-                  ],
-                ),
-        ),
-        const SizedBox(height: 16),
-        if (mail.html case final html?)
-          _MailHtml(html)
-        else
-          Text(mail.body, style: const TextStyle(fontSize: 18, height: 1.7)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          // Same box as the filled 요약 듣기 beside it.
+                          style: OutlinedButton.styleFrom(
+                            minimumSize: const Size.fromHeight(56),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            side: BorderSide(color: colors.outlineVariant),
+                            textStyle: const TextStyle(
+                              fontSize: 17,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          onPressed: () => _listen(whole: true),
+                          icon: const Icon(Icons.play_arrow_rounded),
+                          label: Text(
+                            mail.length.isEmpty
+                                ? '전체 듣기'
+                                : '전체 듣기 ${mail.length}',
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+          ),
+          const SizedBox(height: 16),
+          if (mail.html case final html?)
+            _MailHtml(html)
+          else
+            Text(mail.body, style: const TextStyle(fontSize: 18, height: 1.7)),
+        ],
         // Room so the last line can scroll out from under the reply pill.
         const SizedBox(height: 104),
       ],
@@ -413,7 +453,7 @@ class _SummaryCardState extends State<_SummaryCard> {
       body = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('요약 모델 받는 중 · $progress% · 앱을 닫아도 계속 받아요', style: hint),
+          Text('요약 모델 $progress% 받았어요. 앱을 닫아도 계속 받아요', style: hint),
           const SizedBox(height: 8),
           LinearProgressIndicator(value: progress / 100),
         ],

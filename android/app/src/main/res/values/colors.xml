@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- App background (lib/main.dart), shown behind the splash and Flutter. -->
-    <color name="app_background">#EEEEEE</color>
+    <!-- App background (lib/main.dart), shown behind the splash, Flutter and the floating dock. -->
+    <color name="app_background">#F2F2F7</color>
 </resources>

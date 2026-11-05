@@ -79,23 +79,39 @@ class VoiceSettingsScreen extends StatelessWidget {
       return AppPage(
         trail: [...from, '음성 설정'],
         children: [
-          const ScreenTitle('음성 설정', '어떤 모델로 알아들을까요?'),
-          const SizedBox(height: 8),
+          const ScreenTitle('', '음성 설정'),
+          const SizedBox(height: 4),
           Text(
             locked
                 ? '듣는 중이거나 모델을 적용 중일 때는 바꿀 수 없어요'
                 : '받은 모델은 인터넷 없이 이 휴대폰 안에서만 인식해요',
-            style: TextStyle(fontSize: 14, color: colors.onSurfaceVariant),
+            style: TextStyle(fontSize: 15, color: colors.onSurfaceVariant),
           ),
           const SizedBox(height: 20),
           if (downloads.shown != null) ...[
             DownloadBanner(downloads),
             const SizedBox(height: 16),
           ],
-          for (final m in SpeechModel.values) ...[
-            _modelCard(context, m, colors, locked),
-            const SizedBox(height: 12),
-          ],
+          MenuGroup(
+            header: '말 알아듣기',
+            indent: 16,
+            bottom: 24,
+            children: [
+              for (final m in SpeechModel.values)
+                _modelRow(context, m, colors, locked),
+            ],
+          ),
+          MenuGroup(
+            header: '읽어 주는 목소리',
+            children: [
+              MenuRow(
+                '휴대폰 내장 한국어',
+                '오프라인 목소리만 써요',
+                icon: Icons.volume_up_rounded,
+                trailing: StatusChip('변경 곧 지원', colors.onSurfaceVariant),
+              ),
+            ],
+          ),
         ],
       );
     },
@@ -132,7 +148,9 @@ class VoiceSettingsScreen extends StatelessWidget {
     }
   }
 
-  Widget _modelCard(
+  /// One model in the 말 알아듣기 group: name, size and what it's good for,
+  /// then its state (사용 중, downloading) and what can be done with it.
+  Widget _modelRow(
     BuildContext context,
     SpeechModel m,
     ColorScheme colors,
@@ -143,42 +161,55 @@ class VoiceSettingsScreen extends StatelessWidget {
     final downloading = downloads.downloading == m;
     final deleting = speech.deleting == m;
     final applying = deleting || speech.busy && m == speech.model;
-    return VoiceCard(
-      borderColor: inUse ? colors.primary : null,
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 14, 8, 8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  '${m.label} · ${m.title}',
-                  style: const TextStyle(
-                    fontSize: 17,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ),
-              if (inUse)
-                Text(
-                  '사용 중',
+          Text.rich(
+            TextSpan(
+              text: m.label,
+              children: [
+                TextSpan(
+                  text: '  ${m.title} · ${m.size}',
                   style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700,
-                    color: colors.primary,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w400,
+                    color: colors.onSurfaceVariant,
                   ),
                 ),
-            ],
+              ],
+            ),
+            style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 2),
           Text(
-            '${m.blurb} · ${m.recommend} · ${m.size}',
-            style: TextStyle(fontSize: 14, color: colors.onSurfaceVariant),
+            '${m.blurb}. ${m.recommend} 좋아요.',
+            style: TextStyle(fontSize: 15, color: colors.onSurfaceVariant),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
           Row(
             children: [
-              if (applying)
+              if (inUse && !applying)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: colors.primaryContainer,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    '사용 중',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: colors.primary,
+                    ),
+                  ),
+                )
+              else if (applying)
                 Row(
                   children: [
                     const SizedBox.square(
@@ -192,9 +223,10 @@ class VoiceSettingsScreen extends StatelessWidget {
                     ),
                   ],
                 )
+              // The banner above has the progress and 취소.
               else if (downloading)
                 Text(
-                  '내려받는 중 ${(downloads.fraction * 100).floor()}%',
+                  '내려받는 중…',
                   style: TextStyle(color: colors.onSurfaceVariant),
                 )
               else if (!onPhone)
@@ -310,7 +342,7 @@ class DownloadBanner extends StatelessWidget {
             ),
             const SizedBox(height: 6),
             Text(
-              '파일 ${downloads.filesDone}/${downloads.shown!.files.length}개 받음 · '
+              '파일 ${downloads.filesDone}/${downloads.shown!.files.length}개 받았어요. '
               '${isDesktop ? '앱을 닫아도 이어서 받아요' : '화면을 꺼도 계속 받아요'}',
               style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
             ),

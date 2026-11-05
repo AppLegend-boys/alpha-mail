@@ -1,11 +1,8 @@
 import 'dart:io';
+import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-
-/// Amber for offline / waiting states (design 06).
-const amber = Color(0xfff2a93b);
-const amberCard = Color(0xfffff1dc);
 
 /// Desktop is mail-first for now: voice recognition and its models are off.
 final isDesktop = Platform.isMacOS || Platform.isWindows || Platform.isLinux;
@@ -33,13 +30,60 @@ class ServiceBadge extends StatelessWidget {
         fontSize: size < 20 ? size * 0.65 : size * 0.45,
         height: 1,
         fontWeight: FontWeight.w900,
+        // The service's own mark, white as in its logo.
         color: Colors.white,
       ),
     ),
   );
 }
 
-/// Rounded dark card with a hairline border, the base of every block.
+/// Frosted white over whatever scrolls beneath: the dock, the mic and the
+/// round back button. Solid white when the phone asks for more contrast.
+class Glass extends StatelessWidget {
+  const Glass({super.key, required this.child, this.radius = 22});
+  final Widget child;
+  final double radius;
+
+  @override
+  Widget build(BuildContext context) {
+    final round = BorderRadius.circular(radius);
+    final solid = MediaQuery.highContrastOf(context);
+    final face = DecoratedBox(
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: solid ? 1 : 0.72),
+        borderRadius: round,
+        border: Border.all(
+          color: Colors.white.withValues(alpha: 0.75),
+          width: 0.5,
+        ),
+      ),
+      child: child,
+    );
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: round,
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x1f000000),
+            blurRadius: 30,
+            offset: Offset(0, 8),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: round,
+        child: solid
+            ? face
+            : BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
+                child: face,
+              ),
+      ),
+    );
+  }
+}
+
+/// White rounded group on the grey background, the base of every block.
 class VoiceCard extends StatelessWidget {
   const VoiceCard({
     super.key,
@@ -59,12 +103,14 @@ class VoiceCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final radius = BorderRadius.circular(14);
+    final radius = BorderRadius.circular(22);
     return Material(
       color: color ?? colors.surfaceContainer,
       shape: RoundedRectangleBorder(
         borderRadius: radius,
-        side: BorderSide(color: borderColor ?? colors.outlineVariant),
+        side: borderColor == null
+            ? BorderSide.none
+            : BorderSide(color: borderColor!),
       ),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
@@ -75,7 +121,166 @@ class VoiceCard extends StatelessWidget {
   }
 }
 
-/// Small grey label above a big white title, as on every design screen.
+/// Rows as one white group with hairlines between them, as in iOS
+/// settings: [MenuRow]s, accounts, mails, form fields. A grey [header]
+/// names it.
+class MenuGroup extends StatelessWidget {
+  const MenuGroup({
+    super.key,
+    required this.children,
+    this.header,
+    this.indent = 60,
+    this.bottom = 20,
+  });
+  final List<Widget> children;
+  final String? header;
+
+  /// Where the hairlines start: past a row's icon (60) or at its text.
+  final double indent;
+
+  /// Space below, before what follows.
+  final double bottom;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: EdgeInsets.only(bottom: bottom),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (header case final header?) GroupLabel(header),
+        VoiceCard(
+          padding: EdgeInsets.zero,
+          child: Column(
+            children: [
+              for (final (i, row) in children.indexed) ...[
+                if (i > 0)
+                  Divider(
+                    height: 0.5,
+                    thickness: 0.5,
+                    indent: indent,
+                    color: Theme.of(context).colorScheme.outlineVariant,
+                  ),
+                row,
+              ],
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+/// Small grey label over a group, inset to line up with its rows' text.
+class GroupLabel extends StatelessWidget {
+  const GroupLabel(this.text, {super.key});
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(16, 0, 16, 7),
+    child: Text(
+      text,
+      style: TextStyle(
+        fontSize: 13,
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+      ),
+    ),
+  );
+}
+
+/// One row of a menu or settings list: [title] (and a lighter [note] beside
+/// it) over [sub], with [trailing] on the right, or a chevron when it opens
+/// a screen.
+class MenuRow extends StatelessWidget {
+  const MenuRow(
+    this.title,
+    this.sub, {
+    super.key,
+    this.note,
+    this.icon,
+    this.trailing,
+    this.onTap,
+  });
+
+  final String title;
+  final String? note;
+  final String sub;
+  final IconData? icon;
+  final Widget? trailing;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final row = Row(
+      children: [
+        // An ink tile holding the icon, as in iOS settings.
+        if (icon != null) ...[
+          Container(
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(
+              color: colors.primary,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(icon, size: 18, color: colors.onPrimary),
+          ),
+          const SizedBox(width: 14),
+        ],
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text.rich(
+                TextSpan(
+                  text: title,
+                  children: [
+                    if (note != null)
+                      TextSpan(
+                        text: ' $note',
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                          color: colors.onSurfaceVariant,
+                        ),
+                      ),
+                  ],
+                ),
+                style: const TextStyle(fontSize: 17),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                sub,
+                style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 12),
+        trailing ??
+            (onTap == null
+                ? const SizedBox.shrink()
+                : Icon(Icons.chevron_right_rounded, color: colors.outline)),
+      ],
+    );
+    // Inside a MenuGroup the group is the card; alone, the row is one.
+    if (context.findAncestorWidgetOfExactType<MenuGroup>() != null) {
+      return InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: row,
+        ),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: VoiceCard(onTap: onTap, child: row),
+    );
+  }
+}
+
+/// Small grey label (none when empty) above an iOS large title.
 class ScreenTitle extends StatelessWidget {
   const ScreenTitle(this.label, this.title, {super.key});
   final String label;
@@ -87,17 +292,20 @@ class ScreenTitle extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          label,
-          style: TextStyle(fontSize: 14, color: colors.onSurfaceVariant),
-        ),
-        const SizedBox(height: 6),
+        if (label.isNotEmpty) ...[
+          Text(
+            label,
+            style: TextStyle(fontSize: 14, color: colors.onSurfaceVariant),
+          ),
+          const SizedBox(height: 6),
+        ],
         Text(
           title,
           style: const TextStyle(
-            fontSize: 28,
-            height: 1.35,
-            fontWeight: FontWeight.w800,
+            fontSize: 34,
+            height: 1.2,
+            fontWeight: FontWeight.w700,
+            letterSpacing: -0.7,
           ),
         ),
       ],
@@ -160,24 +368,27 @@ class _AppPageState extends State<AppPage> {
     child: GestureDetector(
       onHorizontalDragEnd: Platform.isIOS ? null : _onSwipe,
       child: Scaffold(
-        // Shorter than the default 56 so the back button and path sit as
-        // high as the home's logo row.
         appBar: AppBar(
-          toolbarHeight: 48,
-          leadingWidth: 48,
-          titleSpacing: 0,
+          toolbarHeight: 56,
+          leadingWidth: 64,
+          titleSpacing: 4,
+          leading: Navigator.canPop(context) ? const _GlassBack() : null,
           title: _Trail(widget.trail),
         ),
-        body: SafeArea(
-          top: false,
-          // Desktop windows: keep the column readable instead of edge to edge.
-          child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 760),
-              child: ListView(
-                padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
-                children: widget.children,
+        // Desktop windows: keep the column readable instead of edge to edge.
+        body: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 760),
+            // Scrolls on under the floating dock, which the bottom padding
+            // (the dock's height, set by home) clears at the end.
+            child: ListView(
+              padding: EdgeInsets.fromLTRB(
+                20,
+                4,
+                20,
+                24 + MediaQuery.paddingOf(context).bottom,
               ),
+              children: widget.children,
             ),
           ),
         ),
@@ -190,6 +401,33 @@ class _AppPageState extends State<AppPage> {
           null => null,
         },
         floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+      ),
+    ),
+  );
+}
+
+/// Round white back button, top left of every screen but home.
+class _GlassBack extends StatelessWidget {
+  const _GlassBack();
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(left: 16),
+    // Plain white: the top bar is solid, so there is nothing to frost.
+    child: Center(
+      child: Material(
+        color: Colors.white,
+        shape: const CircleBorder(),
+        elevation: 3,
+        shadowColor: const Color(0x55000000),
+        child: SizedBox.square(
+          dimension: 44,
+          child: IconButton(
+            tooltip: '뒤로',
+            onPressed: () => Navigator.maybePop(context),
+            icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 20),
+          ),
+        ),
       ),
     ),
   );
@@ -253,7 +491,7 @@ class _Trail extends StatelessWidget {
   }
 }
 
-/// Black pill floating over a screen: write a mail or reply, or say one.
+/// Ink pill floating over a screen: write a mail or reply, or say one.
 class WritePill extends StatelessWidget {
   const WritePill(
     this.label, {
@@ -312,7 +550,11 @@ class WritePill extends StatelessWidget {
             ),
           ),
           if (onVoice != null) ...[
-            Container(width: 1, height: 22, color: Colors.white24),
+            Container(
+              width: 1,
+              height: 22,
+              color: colors.onPrimary.withValues(alpha: 0.24),
+            ),
             InkWell(
               onTap: onVoice,
               child: Padding(
@@ -321,15 +563,15 @@ class WritePill extends StatelessWidget {
                   label: voiceLabel ?? '말로 $label',
                   child: Row(
                     children: [
-                      Icon(voiceIcon, color: const Color(0xffc5c0ff)),
+                      Icon(voiceIcon, color: colors.inversePrimary),
                       if (voiceLabel case final text?) ...[
                         const SizedBox(width: 6),
                         Text(
                           text,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 15,
                             fontWeight: FontWeight.w600,
-                            color: Color(0xffc5c0ff),
+                            color: colors.inversePrimary,
                           ),
                         ),
                       ],
@@ -382,18 +624,11 @@ mixin SafeNotifier on ChangeNotifier {
   }
 }
 
-/// Logo lockup, shared by the home bar and the drawer.
-/// The symbol's drop of blue: "mail" in the logo and the unread count.
-const accent = Color(0xff1d5bd6);
-
-/// Light blue for the mic icon on black.
-const voiceBlue = Color(0xff8db4ff);
-
+/// Logo lockup at the top of home.
 class Brand extends StatelessWidget {
   const Brand({super.key});
 
-  // Lockup from design/logo, black "alpha-" and [accent] "mail", as in the
-  // blue-accent drafts.
+  // Lockup from design/logo: black "alpha-" and "mail" in the pen ink.
   @override
   Widget build(BuildContext context) => Image.asset(
     'assets/brand/logo-horizontal-accent.png',

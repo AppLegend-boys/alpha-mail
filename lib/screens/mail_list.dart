@@ -7,8 +7,73 @@ import '../mail/mail.dart';
 import '../mail/mail_account.dart';
 import '../voice/speech.dart';
 import '../widgets.dart';
+import 'help.dart';
 import 'mail_view.dart';
 import 'settings.dart';
+
+/// 메일: a menu of every [MailFolder].
+class MailMenuScreen extends StatelessWidget {
+  const MailMenuScreen({
+    super.key,
+    required this.from,
+    required this.folderScreen,
+    required this.inbox,
+    required this.unreadCount,
+  });
+
+  final List<String> from;
+
+  /// Redraws [unreadCount], shown beside 안 읽은 메일, as mail comes in.
+  final Listenable inbox;
+  final int Function() unreadCount;
+
+  /// The folder to open, given its breadcrumb.
+  final Widget Function(MailFolder folder, List<String> from) folderScreen;
+
+  @override
+  Widget build(BuildContext context) {
+    final trail = [...from, '메일'];
+    return AppPage(
+      trail: trail,
+      children: [
+        const ScreenTitle('메일', '어떤 메일함을 열까요?'),
+        const SizedBox(height: 20),
+        MenuGroup(
+          children: [
+            for (final (folder, icon, sub) in const [
+              (MailFolder.all, Icons.inbox_outlined, '받은 메일 모두'),
+              (
+                MailFolder.unread,
+                Icons.mark_email_unread_outlined,
+                '아직 읽지 않은 메일',
+              ),
+              (MailFolder.sent, Icons.send_outlined, '내가 보낸 메일'),
+              (MailFolder.starred, Icons.star_outline_rounded, '별표·중요 표시한 메일'),
+              (MailFolder.trash, Icons.delete_outline_rounded, '지운 메일'),
+            ])
+              ListenableBuilder(
+                listenable: inbox,
+                builder: (context, _) => MenuRow(
+                  folder == MailFolder.all ? '전체 메일함' : folder.label,
+                  sub,
+                  note: folder == MailFolder.unread && unreadCount() > 0
+                      ? '(${unreadCount()}건)'
+                      : null,
+                  icon: icon,
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => folderScreen(folder, trail),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+}
 
 /// One [MailFolder] of every linked account, newest first, with a chip per
 /// account to look at one alone. No accounts shows the example mails.
@@ -49,6 +114,12 @@ class MailFolderScreen extends StatefulWidget {
   State<MailFolderScreen> createState() => _MailFolderScreenState();
 }
 
+/// Each folder's newest page per account (and unread total) from the last
+/// time it was opened, shown at once while it is fetched again.
+// shortcut: kept in memory only, so the first open after launch still
+// waits; save to disk if that gets slow.
+final _shownBefore = <(MailFolder, String), (List<Mail>, int)>{};
+
 class _MailFolderScreenState extends State<MailFolderScreen> {
   late String? _only = widget.only?.address;
   final _mails = <String, List<Mail>>{};
@@ -68,6 +139,12 @@ class _MailFolderScreenState extends State<MailFolderScreen> {
   void initState() {
     super.initState();
     for (final account in widget.accounts) {
+      if (_shownBefore[(widget.folder, account.address)]
+          case (final mails, final total)?) {
+        _mails[account.address] = mails;
+        _totals[account.address] = total;
+        if (mails.length >= widget.limit) _more.add(account.address);
+      }
       _fetch(account);
     }
   }
@@ -85,19 +162,29 @@ class _MailFolderScreenState extends State<MailFolderScreen> {
             if (before == null) _totals[account.address] = unread.total;
             return unread.mails;
           }),
-        MailFolder.all => await account.fetchRecent(
+        MailFolder.starred =>
+          await account
+              .fetchStarred(limit: widget.limit, before: before)
+              .then((starred) => starred.mails),
+        _ => await account.fetchRecent(
           limit: widget.limit,
-          before: before,
-        ),
-        MailFolder.sent => await account.fetchRecent(
-          limit: widget.limit,
-          sent: true,
+          folder: widget.folder,
           before: before,
         ),
       };
       if (!mounted) return;
+      if (before == null) {
+        _shownBefore[(widget.folder, account.address)] = (
+          mails,
+          _totals[account.address] ?? 0,
+        );
+      }
       setState(() {
-        _mails[account.address] = [...?_mails[account.address], ...mails];
+        // The newest page replaces what was shown from last time.
+        _mails[account.address] = [
+          if (before != null) ...?_mails[account.address],
+          ...mails,
+        ];
         mails.length >= widget.limit
             ? _more.add(account.address)
             : _more.remove(account.address);
@@ -217,34 +304,39 @@ class _MailFolderScreenState extends State<MailFolderScreen> {
         const SizedBox(height: 14),
         for (final a in _shown)
           if (_errors[a.address] case final error?) ...[
-            Text(error, style: hint),
+            ProblemText(error, style: hint),
             const SizedBox(height: 8),
           ],
         if (mails.isEmpty)
           _loading
               ? const Center(child: CircularProgressIndicator())
               : Text('메일이 없어요', textAlign: TextAlign.center, style: hint),
-        for (final (i, mail) in mails.indexed) ...[
-          if (i > 0) const SizedBox(height: 8),
-          MailTile(
-            mail,
-            read: _isRead(mail),
-            showSource: _only == null && accounts.length > 1,
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => BriefingScreen(
-                  from: [...widget.from, widget.folder.label],
-                  mails: mails,
-                  index: i,
-                  onRead: _onRead,
-                  autoRead: false,
-                  speech: widget.speech,
+        if (mails.isNotEmpty)
+          MenuGroup(
+            indent: 32,
+            bottom: 0,
+            children: [
+              for (final (i, mail) in mails.indexed)
+                MailTile(
+                  mail,
+                  read: _isRead(mail),
+                  showSource: _only == null && accounts.length > 1,
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => BriefingScreen(
+                        from: [...widget.from, widget.folder.label],
+                        mails: mails,
+                        index: i,
+                        onRead: _onRead,
+                        autoRead: false,
+                        speech: widget.speech,
+                      ),
+                    ),
+                  ),
                 ),
-              ),
-            ),
+            ],
           ),
-        ],
         if (_loading && mails.isNotEmpty) ...[
           const SizedBox(height: 16),
           Text('다른 계정 메일을 불러오는 중…', textAlign: TextAlign.center, style: hint),
@@ -282,6 +374,8 @@ class _MailFolderScreenState extends State<MailFolderScreen> {
 
 /// One row of a mail list: sender, time, subject and the first body line.
 /// Read ones fade, as in a mail app's list.
+final _spaces = RegExp(r'\s+');
+
 class MailTile extends StatelessWidget {
   const MailTile(
     this.mail, {
@@ -322,65 +416,105 @@ class MailTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final when = _when(mail.date);
-    return VoiceCard(
+    return InkWell(
       onTap: onTap,
-      child: Opacity(
-        opacity: read ? 0.5 : 1,
-        child: Column(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(0, 10, 16, 10),
+        child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    mail.from,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700,
+            // Unread mail gets an ink dot, as in iOS Mail.
+            SizedBox(
+              width: 32,
+              child: Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Center(
+                  child: Container(
+                    width: 10,
+                    height: 10,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: read ? Colors.transparent : colors.primary,
                     ),
                   ),
                 ),
-                // The badge stands for the service's name; example mails
-                // have no account, so they keep the name as text.
-                if (mail.account?.service case final service?
-                    when showSource) ...[
-                  Semantics(
-                    label: service.label,
-                    child: ExcludeSemantics(
-                      child: ServiceBadge(
-                        service.mark,
-                        service.color,
-                        size: 14,
+              ),
+            ),
+            Expanded(
+              // Read mails step back in weight and grey, not opacity, so their text
+              // keeps its contrast.
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          mail.from,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: read
+                                ? FontWeight.w500
+                                : FontWeight.w700,
+                            color: read ? colors.onSurfaceVariant : null,
+                          ),
+                        ),
                       ),
+                      // The badge stands for the service's name; example mails
+                      // have no account, so they keep the name as text.
+                      if (mail.account?.service case final service?
+                          when showSource) ...[
+                        Semantics(
+                          label: service.label,
+                          child: ExcludeSemantics(
+                            child: ServiceBadge(
+                              service.mark,
+                              service.color,
+                              size: 14,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                      ],
+                      Text(
+                        showSource && mail.account == null
+                            ? '${mail.source}, $when'
+                            : when,
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: colors.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    mail.subject,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 15,
+                      color: read ? colors.onSurfaceVariant : null,
                     ),
                   ),
-                  const SizedBox(width: 4),
-                ],
-                Text(
-                  showSource && mail.account == null
-                      ? '${mail.source} · $when'
-                      : when,
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: colors.onSurfaceVariant,
+                  const SizedBox(height: 2),
+                  Text(
+                    // Two lines show at most a few hundred characters; tidying the
+                    // whole body on every rebuild made long lists stutter.
+                    (mail.body.length > 300
+                            ? mail.body.substring(0, 300)
+                            : mail.body)
+                        .replaceAll(_spaces, ' '),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: colors.onSurfaceVariant,
+                    ),
                   ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              mail.subject,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 15),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              mail.body.replaceAll(RegExp(r'\s+'), ' '),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
+                ],
+              ),
             ),
           ],
         ),

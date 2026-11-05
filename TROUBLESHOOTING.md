@@ -4,6 +4,13 @@
 
 ---
 
+## Gmail·Outlook을 같이 연결하면 한쪽(또는 둘 다)이 로그인 실패
+
+- **날짜:** 2026-11-02
+- **문제:** 앱을 켜면 Gmail은 '구글 로그인에 실패했어요. (L-02)', Outlook은 '마이크로소프트 로그인에 실패했어요. (L-03)'. 네이버는 정상.
+- **원인:** `flutter_appauth`는 토큰 요청을 한 번에 하나만 받아요. 두 계정이 동시에 액세스 토큰을 받으려 하면 뒤 요청은 `PlatformException(token_failed, Concurrent operations detected: token, token)`으로 바로 거절되고, 앞 요청도 응답 없이 20초 제한에 걸렸어요.
+- **해결:** `lib/mail/mail_account.dart`의 `_accessToken`: 토큰 요청을 `_tokenTurn`으로 한 줄로 세우고, 받은 토큰은 만료 5분 전까지 다시 써요.
+
 ## 홈 밖 화면의 위쪽 줄이 한 칸 내려와 있음
 
 - **날짜:** 2026-10-28

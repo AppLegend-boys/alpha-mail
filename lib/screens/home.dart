@@ -14,10 +14,9 @@ import '../voice/tts.dart';
 import '../widgets.dart';
 import 'compose.dart';
 import 'connect.dart';
-import 'home_menu.dart';
+import 'help.dart';
 import 'mail_list.dart';
 import 'mail_view.dart';
-import 'offline.dart';
 import 'settings.dart';
 import 'voice_settings.dart';
 
@@ -35,7 +34,6 @@ class _HomeScreenState extends State<HomeScreen> {
   final _speech = Recognizer();
   late final _downloads = ModelDownloads(onDone: _speech.switchWhenFree);
   final _inbox = MailInbox();
-  final _scaffold = GlobalKey<ScaffoldState>();
   final _content = GlobalKey<NavigatorState>();
   AppSettings _settings = const AppSettings();
   bool _opening = false;
@@ -43,12 +41,9 @@ class _HomeScreenState extends State<HomeScreen> {
   /// Saying "읽어드릴까요?" before the mic turns on.
   bool _asking = false;
 
-  /// Menu item lit up in the sidebar; [_push] sets it, and it goes back to
-  /// home once that screen closes.
+  /// Dock tab lit up; [_push] sets it, and it goes back to home once that
+  /// screen closes.
   String _section = 'home';
-
-  /// Sidebar shrunk to an icon rail (wide windows only).
-  bool _railOnly = false;
 
   /// Bumped per [_push], so a screen closing after another menu item has
   /// opened leaves the newer highlight alone.
@@ -159,8 +154,7 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-  /// Screens open in the content pane: above the dock on phones, beside
-  /// the sidebar on wide windows.
+  /// Screens open in the content pane, above the dock.
   Future<void> _push(Widget screen, {String? section}) async {
     final push = ++_pushes;
     setState(() {
@@ -181,22 +175,11 @@ class _HomeScreenState extends State<HomeScreen> {
   /// instead of closing and reopening it, which flashed home in between.
   void _reopen(String section, VoidCallback open) {
     if (_section != section || _top == null) return open();
-    _closeDrawer();
     _content.currentState?.popUntil((route) => route == _top);
   }
 
-  /// Menu taps close the drawer; the sidebar has none to close.
-  void _closeDrawer() {
-    if (_scaffold.currentState?.isEndDrawerOpen ?? false) {
-      Navigator.pop(context);
-    }
-  }
-
-  /// Back to home with the drawer shut, before a menu item opens its screen.
-  void _goHome() {
-    _closeDrawer();
-    _content.currentState?.popUntil((route) => route.isFirst);
-  }
+  /// Back to home, before a dock tab opens its screen.
+  void _goHome() => _content.currentState?.popUntil((route) => route.isFirst);
 
   void _openSettings() {
     _goHome();
@@ -212,6 +195,27 @@ class _HomeScreenState extends State<HomeScreen> {
           _inbox.checkEvery(settings.checkMinutes);
         },
         accountsScreen: _providerScreen,
+        voiceScreen: (from) {
+          _downloads.refreshOnPhone();
+          return VoiceSettingsScreen(
+            from: from,
+            speech: _speech,
+            downloads: _downloads,
+          );
+        },
+      ),
+    );
+  }
+
+  void _openMail() {
+    _goHome();
+    _push(
+      section: 'mail',
+      MailMenuScreen(
+        from: [homeLabel],
+        folderScreen: (folder, from) => _folderScreen(folder, from: from),
+        inbox: _inbox,
+        unreadCount: () => _unreadCount,
       ),
     );
   }
@@ -228,37 +232,27 @@ class _HomeScreenState extends State<HomeScreen> {
     onRemoved: _inbox.remove,
   );
 
-  /// Opens a [MailFolder] from the menu or a home card, [only] one
-  /// account's mail when given.
+  /// Opens a [MailFolder] from a home card, [only] one account's mail when
+  /// given.
   void _openFolder(MailFolder folder, {MailAccount? only}) {
     _goHome();
-    _push(
-      section: folder.name,
-      MailFolderScreen(
-        from: [homeLabel],
-        folder: folder,
-        accounts: _inbox.accounts,
-        only: only,
-        limit: _settings.listSize,
-        onRead: _inbox.markRead,
-        onOpenAll: (only) => _openFolder(MailFolder.all, only: only),
-        speech: _speech,
-      ),
-    );
+    _push(section: 'mail', _folderScreen(folder, only: only));
   }
 
-  void _openVoiceSettings() {
-    _downloads.refreshOnPhone();
-    _goHome();
-    _push(
-      section: 'voice',
-      VoiceSettingsScreen(
-        from: [homeLabel],
-        speech: _speech,
-        downloads: _downloads,
-      ),
-    );
-  }
+  Widget _folderScreen(
+    MailFolder folder, {
+    List<String>? from,
+    MailAccount? only,
+  }) => MailFolderScreen(
+    from: from ?? [homeLabel],
+    folder: folder,
+    accounts: _inbox.accounts,
+    only: only,
+    limit: _settings.listSize,
+    onRead: _inbox.markRead,
+    onOpenAll: (only) => _openFolder(MailFolder.all, only: only),
+    speech: _speech,
+  );
 
   void _openCompose() {
     _goHome();
@@ -276,11 +270,6 @@ class _HomeScreenState extends State<HomeScreen> {
         },
       ),
     );
-  }
-
-  void _openOffline() {
-    _goHome();
-    _push(section: 'offline', OfflineScreen(from: [homeLabel]));
   }
 
   // ponytail: keyword match, not intent parsing; enough for "어, 해줘" /
@@ -337,9 +326,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     // No voice: the question is still on screen, so listen anyway.
     if (problem != null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(problem)));
+      showProblem(context, problem);
     }
     await _speech.toggleListening();
   }
@@ -352,9 +339,7 @@ class _HomeScreenState extends State<HomeScreen> {
       if (_speech.listening) await _speech.toggleListening();
       if (!mounted) return;
       if (mails.isEmpty) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(_inbox.error ?? '안 읽은 메일이 없어요')));
+        showProblem(context, _inbox.error ?? '안 읽은 메일이 없어요');
         return;
       }
       await _push(
@@ -371,20 +356,6 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) _speech.clear();
   }
 
-  Widget _menu({bool sidebar = false}) => HomeMenu(
-    sidebar: sidebar,
-    railOnly: _railOnly,
-    onToggleRail: () => setState(() => _railOnly = !_railOnly),
-    section: _section,
-    linked: _inbox.accounts.isNotEmpty,
-    onHome: _goHome,
-    onFolder: _openFolder,
-    onVoice: _openVoiceSettings,
-    onConnect: _openConnect,
-    onSettings: _openSettings,
-    onOffline: _openOffline,
-  );
-
   /// Unread mail across accounts: the server's count, or the example mails'.
   int get _unreadCount => _inbox.accounts.isEmpty
       ? mockMails.length
@@ -393,136 +364,86 @@ class _HomeScreenState extends State<HomeScreen> {
           (n, a) => n + (_inbox.unreadTotal[a.address] ?? 0),
         );
 
-  /// Draft C's widgets: the unread total on the left, opening 안 읽은 메일,
-  /// and one row per account on the right with its own count.
-  Widget _unreadWidgets(ColorScheme colors) {
-    Widget card({required Widget child, required VoidCallback onTap}) =>
-        Material(
-          color: colors.surfaceContainer,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-            side: BorderSide(color: colors.outlineVariant),
+  /// Accounts as one iOS-style group: each with its unread count, opening
+  /// its unread mail, then 계정 추가.
+  Widget _accountGroup(ColorScheme colors) {
+    Widget row({
+      required Widget lead,
+      required String label,
+      Widget? trailing,
+      Color? color,
+      required VoidCallback onTap,
+    }) => InkWell(
+      onTap: onTap,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 56),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              lead,
+              const SizedBox(width: 14),
+              Expanded(
+                child: Text(
+                  label,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 17, color: color),
+                ),
+              ),
+              if (trailing != null) ...[trailing, const SizedBox(width: 8)],
+              if (color == null)
+                Icon(Icons.chevron_right_rounded, color: colors.outline),
+            ],
           ),
-          clipBehavior: Clip.antiAlias,
-          child: InkWell(onTap: onTap, child: child),
-        );
-    final total = card(
-      onTap: () => _openFolder(MailFolder.unread),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text(
-              _inbox.accounts.isEmpty ? '예시 메일' : '안 읽은 메일',
-              style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w700,
-                color: colors.onSurfaceVariant,
-              ),
-            ),
-            Text.rich(
-              TextSpan(
-                text: '$_unreadCount',
-                children: [
-                  TextSpan(
-                    text: '건',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w800,
-                      color: colors.onSurface,
-                    ),
-                  ),
-                ],
-              ),
-              style: const TextStyle(
-                fontSize: 56,
-                height: 1,
-                fontWeight: FontWeight.w900,
-                color: accent,
-              ),
-            ),
-            const Text(
-              '메일함 열기 ›',
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
-            ),
-          ],
         ),
       ),
     );
     final rows = [
       for (final a in _inbox.accounts)
-        SizedBox(
-          height: 76,
-          child: card(
-            onTap: () => _openFolder(MailFolder.unread, only: a),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 14),
-              child: Row(
-                children: [
-                  ServiceBadge(a.service.mark, a.service.color, size: 28),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      a.service.label.replaceAll(' 메일', ''),
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
+        row(
+          lead: ServiceBadge(a.service.mark, a.service.color, size: 30),
+          label: a.service.label,
+          onTap: () => _openFolder(MailFolder.unread, only: a),
+          trailing:
+              _inbox.unread[a.address] == null &&
+                  _inbox.errors[a.address] == null
+              ? const SizedBox.square(
+                  dimension: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2.5),
+                )
+              : Text(
+                  switch (_inbox.unread[a.address]) {
+                    null => '실패',
+                    _ => '${_inbox.unreadTotal[a.address] ?? 0}',
+                  },
+                  style: TextStyle(
+                    fontSize: 17,
+                    color: _inbox.unread[a.address] == null
+                        ? colors.error
+                        : colors.onSurfaceVariant,
                   ),
-                  Text(
-                    switch (_inbox.unread[a.address]) {
-                      null when _inbox.errors[a.address] == null => '…',
-                      null => '실패',
-                      _ => '${_inbox.unreadTotal[a.address] ?? 0}',
-                    },
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w800,
-                      color:
-                          _inbox.errors[a.address] != null &&
-                              _inbox.unread[a.address] == null
-                          ? colors.error
-                          : colors.onSurface,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
+                ),
         ),
-    ];
-    return IntrinsicHeight(
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Expanded(
-            child: ConstrainedBox(
-              // Two account rows tall, as drawn, even with one account.
-              constraints: const BoxConstraints(minHeight: 162),
-              child: total,
-            ),
+      row(
+        lead: Container(
+          width: 30,
+          height: 30,
+          decoration: BoxDecoration(
+            color: colors.primaryContainer,
+            shape: BoxShape.circle,
           ),
-          if (rows.isNotEmpty) ...[
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                children: [
-                  for (final (i, row) in rows.indexed) ...[
-                    if (i > 0) const SizedBox(height: 10),
-                    row,
-                  ],
-                ],
-              ),
-            ),
-          ],
-        ],
+          child: Icon(Icons.add_rounded, size: 20, color: colors.primary),
+        ),
+        label: _inbox.accounts.isEmpty ? '메일 계정 연결하기' : '계정 추가',
+        color: colors.primary,
+        onTap: _openConnect,
       ),
-    );
+    ];
+    return MenuGroup(header: '계정', bottom: 0, children: rows);
   }
+
+  /// Hides the "읽어드릴까요?" card until the app opens again.
+  bool _notNow = false;
 
   @override
   Widget build(BuildContext context) {
@@ -543,7 +464,7 @@ class _HomeScreenState extends State<HomeScreen> {
         ? (_speech.status, '처음 한 번만 조금 걸려요')
         : waiting != null
         ? (
-            '${waiting.label} 모델 받는 중 · ${(_downloads.fraction * 100).floor()}%',
+            '${waiting.label} 모델 ${(_downloads.fraction * 100).floor()}% 받았어요',
             '다 받으면 눌러서 말할 수 있어요',
           )
         : needsModel
@@ -555,7 +476,7 @@ class _HomeScreenState extends State<HomeScreen> {
         : _speech.partial == '…'
         ? ('말씀을 확인하고 있어요', '잠시만요')
         : (
-            wide && !isDesktop ? '눌러서 말하기 · Space' : '눌러서 말하기',
+            wide && !isDesktop ? '눌러서 말하기 (Space)' : '눌러서 말하기',
             _speech.status == Recognizer.missed
                 ? Recognizer.missed
                 : '"오늘 메일 온 거 읊어줘"',
@@ -570,6 +491,7 @@ class _HomeScreenState extends State<HomeScreen> {
     // nothing, as in draft C.
     final status = Column(
       mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.end,
       children: [
         Material(
           color: colors.surfaceContainer,
@@ -607,18 +529,20 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
         ),
-        // The tail, pointing down at the mic.
-        CustomPaint(
-          size: const Size(16, 8),
-          painter: _Tail(colors.surfaceContainer),
+        // The tail, pointing down at the mic's centre.
+        Padding(
+          padding: const EdgeInsets.only(right: 23),
+          child: CustomPaint(
+            size: const Size(16, 8),
+            painter: _Tail(colors.surfaceContainer),
+          ),
         ),
-        const SizedBox(height: 4),
+        const SizedBox(height: 6),
       ],
     );
 
-    // Tab bar under every screen: 홈 · 메일함 | mic | 메일 작성 · 설정, the mic
-    // rising above the bar. The bar sits 26 down inside the stack so the
-    // raised part still takes taps.
+    // Floating dock under every screen: a frosted pill of 홈 · 메일 · 설정
+    // and the round mic beside it. Screens scroll on beneath it.
     Widget tab(
       String label,
       IconData icon,
@@ -626,27 +550,29 @@ class _HomeScreenState extends State<HomeScreen> {
       bool selected,
       VoidCallback onTap,
     ) {
-      final color = selected ? colors.onSurface : colors.onSurfaceVariant;
+      final color = selected ? colors.primary : colors.onSurface;
       return Expanded(
         child: Semantics(
           selected: selected,
           button: true,
-          child: InkWell(
-            onTap: onTap,
-            child: SizedBox(
-              height: 64,
+          child: Material(
+            color: selected ? const Color(0x0f000000) : Colors.transparent,
+            shape: const StadiumBorder(),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              onTap: onTap,
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Icon(selected ? selectedIcon : icon, size: 24, color: color),
-                  const SizedBox(height: 3),
+                  const SizedBox(height: 1),
                   Text(
                     label,
                     maxLines: 1,
                     style: TextStyle(
-                      fontSize: 12,
+                      fontSize: 11,
                       color: color,
-                      fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
                     ),
                   ),
                 ],
@@ -657,98 +583,98 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
 
-    final bar = Stack(
-      alignment: Alignment.topCenter,
-      // The bubble draws above the bar, over the screen's bottom edge.
-      clipBehavior: Clip.none,
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(top: 26),
-          child: Container(
-            padding: EdgeInsets.fromLTRB(
-              8,
-              0,
-              8,
-              MediaQuery.viewPaddingOf(context).bottom,
-            ),
-            decoration: BoxDecoration(
-              color: colors.surfaceContainer,
-              border: Border(top: BorderSide(color: colors.outlineVariant)),
-            ),
-            child: Row(
-              children: [
-                tab(
-                  homeLabel,
-                  Icons.home_outlined,
-                  Icons.home_rounded,
-                  _section == 'home',
-                  _goHome,
-                ),
-                tab(
-                  '메일함',
-                  Icons.mail_outline_rounded,
-                  Icons.mail_rounded,
-                  MailFolder.values.any((f) => f.name == _section),
-                  () => _reopen(
-                    MailFolder.all.name,
-                    () => _openFolder(MailFolder.all),
+    final bar = Padding(
+      padding: EdgeInsets.fromLTRB(
+        16,
+        0,
+        16,
+        _dockGap + MediaQuery.viewPaddingOf(context).bottom,
+      ),
+      child: Stack(
+        // The bubble draws above the dock, over the screen.
+        clipBehavior: Clip.none,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Glass(
+                  radius: _dockHeight / 2,
+                  child: SizedBox(
+                    height: _dockHeight,
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Row(
+                        children: [
+                          tab(
+                            homeLabel,
+                            Icons.home_outlined,
+                            Icons.home_rounded,
+                            _section == 'home',
+                            _goHome,
+                          ),
+                          tab(
+                            '메일',
+                            Icons.mail_outline_rounded,
+                            Icons.mail_rounded,
+                            _section == 'mail',
+                            () => _reopen('mail', _openMail),
+                          ),
+                          tab(
+                            '설정',
+                            Icons.settings_outlined,
+                            Icons.settings,
+                            _section == 'settings',
+                            () => _reopen('settings', _openSettings),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
-                const Spacer(),
-                tab(
-                  '메일 작성',
-                  Icons.edit_outlined,
-                  Icons.edit_rounded,
-                  _section == 'compose',
-                  () => _reopen('compose', _openCompose),
-                ),
-                tab(
-                  '설정',
-                  Icons.settings_outlined,
-                  Icons.settings_rounded,
-                  _section == 'settings',
-                  () => _reopen('settings', _openSettings),
-                ),
-              ],
-            ),
+              ),
+              const SizedBox(width: 10),
+              _MicButton(
+                busy: _speech.busy,
+                active: _speech.listening || _asking,
+                icon: needsModel
+                    ? Icons.download_rounded
+                    : _speech.listening || _asking
+                    ? Icons.stop_rounded
+                    : Icons.mic_none_rounded,
+                label: waiting != null
+                    ? '${waiting.label} 모델 받는 중, 다 받으면 말할 수 있어요'
+                    : _speech.busy
+                    ? '${_speech.status}, 잠시만요'
+                    : needsModel
+                    ? '${_speech.model.label} 모델 내려받기'
+                    : _speech.listening || _asking
+                    ? '듣기 멈추기'
+                    : '말하기 시작, "오늘 메일 온 거 읊어줘"',
+                // From another screen the mic goes home first, where the
+                // voice chat shows.
+                onPressed: onMic == null
+                    ? null
+                    : () {
+                        _goHome();
+                        onMic();
+                      },
+              ),
+            ],
           ),
-        ),
-        _MicButton(
-          busy: _speech.busy,
-          icon: needsModel
-              ? Icons.download_rounded
-              : _speech.listening || _asking
-              ? Icons.stop_rounded
-              : Icons.mic_none_rounded,
-          label: waiting != null
-              ? '${waiting.label} 모델 받는 중, 다 받으면 말할 수 있어요'
-              : _speech.busy
-              ? '${_speech.status}, 잠시만요'
-              : needsModel
-              ? '${_speech.model.label} 모델 내려받기'
-              : _speech.listening || _asking
-              ? '듣기 멈추기'
-              : '말하기 시작 · "오늘 메일 온 거 읊어줘"',
-          // From another screen the mic goes home first, where the voice
-          // chat shows.
-          onPressed: onMic == null
-              ? null
-              : () {
-                  _goHome();
-                  onMic();
-                },
-        ),
-        if (!idle)
-          Positioned(
-            top: 0,
-            left: 16,
-            right: 16,
-            child: FractionalTranslation(
-              translation: const Offset(0, -1),
-              child: IgnorePointer(child: Center(child: status)),
+          if (!idle)
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: FractionalTranslation(
+                translation: const Offset(0, -1),
+                child: IgnorePointer(
+                  child: Align(alignment: Alignment.centerRight, child: status),
+                ),
+              ),
             ),
-          ),
-      ],
+        ],
+      ),
     );
 
     final now = DateTime.now();
@@ -758,37 +684,46 @@ class _HomeScreenState extends State<HomeScreen> {
       >= 18 && < 23 => '좋은 저녁이에요',
       _ => '편안한 밤 보내세요',
     };
-    final mails = _inbox.mails;
     final list = RefreshIndicator(
       onRefresh: _inbox.refresh,
       child: ListView(
         // Pullable even when the cards don't fill the screen.
         physics: const AlwaysScrollableScrollPhysics(),
+        // The bottom clears the floating dock, which the list scrolls under.
         padding: wide
-            ? const EdgeInsets.fromLTRB(48, 48, 48, 32)
-            : const EdgeInsets.fromLTRB(16, 8, 16, 24),
+            ? EdgeInsets.fromLTRB(
+                48,
+                48,
+                48,
+                32 + MediaQuery.paddingOf(context).bottom,
+              )
+            : EdgeInsets.fromLTRB(
+                16,
+                8,
+                16,
+                24 + MediaQuery.paddingOf(context).bottom,
+              ),
         children: [
-          if (!wide) ...[
-            Row(
+          Padding(
+            padding: const EdgeInsets.fromLTRB(4, 8, 0, 0),
+            child: Row(
               children: [
-                const Padding(
-                  padding: EdgeInsets.only(left: 4),
-                  child: Brand(),
-                ),
+                const Brand(),
                 const Spacer(),
-                IconButton(
-                  tooltip: '메뉴',
-                  onPressed: () => _scaffold.currentState?.openEndDrawer(),
-                  icon: const Icon(Icons.menu_rounded),
-                  iconSize: 24,
-                  style: IconButton.styleFrom(
-                    minimumSize: const Size.square(48),
+                Glass(
+                  child: SizedBox.square(
+                    dimension: 44,
+                    child: IconButton(
+                      tooltip: '메일 작성',
+                      onPressed: () => _reopen('compose', _openCompose),
+                      icon: Icon(Icons.edit_outlined, color: colors.primary),
+                    ),
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 16),
-          ],
+          ),
+          const SizedBox(height: 12),
           if (!isDesktop && _downloads.shown != null) ...[
             DownloadBanner(_downloads),
             const SizedBox(height: 20),
@@ -802,70 +737,111 @@ class _HomeScreenState extends State<HomeScreen> {
           ] else ...[
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 4),
-              child: Column(
+              child: ScreenTitle(
+                '',
+                _inbox.accounts.isEmpty ? '예시 메일' : '받은 메일',
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(4, 2, 4, 0),
+              child: Text(
+                '$greeting · ${now.month}월 ${now.day}일 '
+                '${'월화수목금토일'[now.weekday - 1]}요일',
+                style: TextStyle(fontSize: 15, color: colors.onSurfaceVariant),
+              ),
+            ),
+            const SizedBox(height: 20),
+            if (_unreadCount > 0 && !_notNow) ...[
+              VoiceCard(
+                padding: const EdgeInsets.all(18),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.graphic_eq_rounded,
+                          size: 16,
+                          color: colors.primary,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          '말로 확인하기',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: colors.primary,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '안 읽은 메일 $_unreadCount건을\n읽어드릴까요?',
+                      style: const TextStyle(
+                        fontSize: 22,
+                        height: 1.3,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: -0.3,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: FilledButton(
+                            onPressed: _openBriefing,
+                            child: const Text('읽어 줘'),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: FilledButton.tonal(
+                            onPressed: () => setState(() => _notNow = true),
+                            child: const Text('나중에'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 28),
+            ],
+            _accountGroup(colors),
+            if (_inbox.error case final error?) ...[
+              const SizedBox(height: 10),
+              ProblemText(
+                '$error\n아래로 당기면 다시 불러와요',
+                style: TextStyle(fontSize: 13, color: colors.error),
+              ),
+            ],
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+              child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    greeting,
-                    style: const TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.w800,
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Icon(
+                      Icons.lock_outline_rounded,
+                      size: 14,
+                      color: colors.onSurfaceVariant,
                     ),
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '${now.month}월 ${now.day}일 '
-                    '${'월화수목금토일'[now.weekday - 1]}요일',
-                    style: TextStyle(
-                      fontSize: 15,
-                      color: colors.onSurfaceVariant,
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      '음성 인식, 요약, 낭독은 모두 이 기기 안에서 처리돼요.',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: colors.onSurfaceVariant,
+                      ),
                     ),
                   ),
                 ],
               ),
             ),
-            const SizedBox(height: 18),
-            _unreadWidgets(colors),
-            if (_inbox.accounts.isEmpty) ...[
-              const SizedBox(height: 10),
-              VoiceCard(
-                onTap: _openConnect,
-                child: Text(
-                  '예시 메일이에요. 누르면 메일 연동으로 가요',
-                  style: TextStyle(color: colors.onSurfaceVariant),
-                ),
-              ),
-            ],
-            if (_inbox.error case final error?) ...[
-              const SizedBox(height: 10),
-              Text(
-                '$error\n아래로 당기면 다시 불러와요',
-                style: TextStyle(fontSize: 13, color: colors.error),
-              ),
-            ],
-            if (mails.isNotEmpty) ...[
-              const Padding(
-                padding: EdgeInsets.fromLTRB(4, 22, 4, 8),
-                child: Text(
-                  '최근 안 읽은 메일',
-                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
-                ),
-              ),
-              MailTile(
-                mails.first,
-                read: false,
-                showSource: true,
-                onTap: () => _push(
-                  BriefingScreen(
-                    from: [homeLabel],
-                    mails: mails,
-                    onRead: _inbox.markRead,
-                    autoRead: false,
-                    speech: _speech,
-                  ),
-                ),
-              ),
-            ],
           ],
           if (!isDesktop) ...[
             if (_speech.listening || heard.isNotEmpty) ...[
@@ -913,27 +889,35 @@ class _HomeScreenState extends State<HomeScreen> {
     );
     // Hidden while typing, so the keyboard doesn't push it up the screen.
     final showBar = !isDesktop && MediaQuery.viewInsetsOf(context).bottom == 0;
-    final content = Column(
+    // This context sits above the SafeArea, so drop the status bar again
+    // too, or every screen's top bar sits a status bar lower. The bottom
+    // padding is the dock's room, which each screen's list scrolls under.
+    final media = MediaQuery.of(context);
+    final room = showBar
+        ? _dockHeight + _dockGap + 8 + media.viewPadding.bottom
+        : media.padding.bottom;
+    final content = Stack(
       children: [
-        // The bar pads itself for the home indicator; screens above it don't.
-        Expanded(
-          // This context sits above the SafeArea, so drop the status bar
-          // again too, or every screen's top bar sits a status bar lower.
-          child: MediaQuery.removePadding(
-            context: context,
-            removeTop: !wide,
-            removeBottom: showBar,
+        Positioned.fill(
+          child: MediaQuery(
+            data: media.copyWith(
+              padding: media.padding.copyWith(top: 0, bottom: room),
+              viewPadding: media.viewPadding.copyWith(top: 0, bottom: room),
+            ),
             child: screens,
           ),
         ),
-        if (showBar) bar,
+        if (showBar) Positioned(left: 0, right: 0, bottom: 0, child: bar),
       ],
     );
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle.dark.copyWith(
+        // The grey background, which the floating dock sits on.
         systemNavigationBarColor: colors.surface,
+        systemNavigationBarDividerColor: colors.surface,
         systemNavigationBarIconBrightness: Brightness.dark,
+        systemNavigationBarContrastEnforced: false,
       ),
       child: CallbackShortcuts(
         bindings: {
@@ -949,24 +933,10 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Focus(
           autofocus: true,
           child: Scaffold(
-            key: _scaffold,
-            endDrawer: wide ? null : Drawer(child: _menu()),
-            body: wide
-                ? Row(
-                    children: [
-                      Container(
-                        width: _railOnly ? 84 : 288,
-                        decoration: BoxDecoration(
-                          border: Border(
-                            right: BorderSide(color: colors.outlineVariant),
-                          ),
-                        ),
-                        child: _menu(sidebar: true),
-                      ),
-                      Expanded(child: content),
-                    ],
-                  )
-                : SafeArea(bottom: false, child: content),
+            // Each screen's own Scaffold moves up for the keyboard; this
+            // one doing it too left the page above it twice as short.
+            resizeToAvoidBottomInset: false,
+            body: SafeArea(bottom: false, child: content),
           ),
         ),
       ),
@@ -974,17 +944,21 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-/// Black round mic rising out of the tab bar. Listening shows a stop icon;
-/// the card above says what it hears.
+const _dockHeight = 62.0;
+const _dockGap = 12.0;
+
+/// Round frosted mic beside the dock, ink-filled while it listens.
 class _MicButton extends StatelessWidget {
   const _MicButton({
     required this.busy,
+    required this.active,
     required this.icon,
     required this.label,
     required this.onPressed,
   });
 
   final bool busy;
+  final bool active;
   final IconData icon;
   final String label;
   final VoidCallback? onPressed;
@@ -992,6 +966,24 @@ class _MicButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    final ink = active ? colors.onPrimary : colors.primary;
+    final face = Material(
+      color: active ? colors.primary : Colors.transparent,
+      shape: const CircleBorder(),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onPressed,
+        child: SizedBox.square(
+          dimension: _dockHeight,
+          child: busy
+              ? Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: CircularProgressIndicator(strokeWidth: 3, color: ink),
+                )
+              : Icon(icon, size: 26, color: ink),
+        ),
+      ),
+    );
     return Semantics(
       button: true,
       label: label,
@@ -999,29 +991,7 @@ class _MicButton extends StatelessWidget {
         message: label,
         child: Opacity(
           opacity: onPressed == null ? 0.4 : 1,
-          child: Material(
-            color: colors.primary,
-            shape: CircleBorder(
-              side: BorderSide(color: colors.surface, width: 4),
-            ),
-            elevation: 6,
-            clipBehavior: Clip.antiAlias,
-            child: InkWell(
-              onTap: onPressed,
-              child: SizedBox.square(
-                dimension: 64,
-                child: busy
-                    ? Padding(
-                        padding: const EdgeInsets.all(20),
-                        child: CircularProgressIndicator(
-                          strokeWidth: 3,
-                          color: colors.onPrimary,
-                        ),
-                      )
-                    : Icon(icon, size: 26, color: voiceBlue),
-              ),
-            ),
-          ),
+          child: Glass(radius: _dockHeight / 2, child: face),
         ),
       ),
     );
