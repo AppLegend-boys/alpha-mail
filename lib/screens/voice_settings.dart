@@ -79,28 +79,48 @@ class VoiceSettingsScreen extends StatelessWidget {
       return AppPage(
         trail: [...from, '음성 설정'],
         children: [
-          const ScreenTitle('음성 설정', '어떤 모델로 알아들을까요?'),
-          const SizedBox(height: 8),
+          const ScreenTitle('', '음성 설정'),
+          const SizedBox(height: 4),
           Text(
             locked
                 ? '듣는 중이거나 모델을 적용 중일 때는 바꿀 수 없어요'
                 : '받은 모델은 인터넷 없이 이 휴대폰 안에서만 인식해요',
-            style: TextStyle(fontSize: 14, color: colors.onSurfaceVariant),
+            style: TextStyle(fontSize: 15, color: colors.onSurfaceVariant),
           ),
           const SizedBox(height: 20),
           if (downloads.shown != null) ...[
             DownloadBanner(downloads),
             const SizedBox(height: 16),
           ],
-          for (final m in SpeechModel.values) ...[
-            _modelCard(context, m, colors, locked),
-            const SizedBox(height: 12),
-          ],
-          const SizedBox(height: 12),
-          MenuRow(
-            '목소리 변경',
-            '메일을 읽어 주는 목소리를 골라요',
-            trailing: StatusChip('곧 지원', colors.onSurfaceVariant),
+          _header('말 알아듣기', colors),
+          VoiceCard(
+            padding: EdgeInsets.zero,
+            child: Column(
+              children: [
+                for (final (i, m) in SpeechModel.values.indexed) ...[
+                  if (i > 0)
+                    Divider(
+                      height: 0.5,
+                      thickness: 0.5,
+                      indent: 16,
+                      color: colors.outlineVariant,
+                    ),
+                  _modelRow(context, m, colors, locked),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+          _header('읽어 주는 목소리', colors),
+          MenuGroup(
+            children: [
+              MenuRow(
+                '휴대폰 내장 한국어',
+                '오프라인 목소리만 써요',
+                icon: Icons.volume_up_rounded,
+                trailing: StatusChip('변경 곧 지원', colors.onSurfaceVariant),
+              ),
+            ],
           ),
         ],
       );
@@ -138,7 +158,17 @@ class VoiceSettingsScreen extends StatelessWidget {
     }
   }
 
-  Widget _modelCard(
+  Widget _header(String text, ColorScheme colors) => Padding(
+    padding: const EdgeInsets.fromLTRB(16, 0, 16, 7),
+    child: Text(
+      text,
+      style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
+    ),
+  );
+
+  /// One model in the 말 알아듣기 group: name, size and what it's good for,
+  /// then its state (사용 중, downloading) and what can be done with it.
+  Widget _modelRow(
     BuildContext context,
     SpeechModel m,
     ColorScheme colors,
@@ -149,42 +179,55 @@ class VoiceSettingsScreen extends StatelessWidget {
     final downloading = downloads.downloading == m;
     final deleting = speech.deleting == m;
     final applying = deleting || speech.busy && m == speech.model;
-    return VoiceCard(
-      borderColor: inUse ? colors.primary : null,
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 14, 8, 8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  '${m.label} (${m.title})',
-                  style: const TextStyle(
-                    fontSize: 17,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ),
-              if (inUse)
-                Text(
-                  '사용 중',
+          Text.rich(
+            TextSpan(
+              text: m.label,
+              children: [
+                TextSpan(
+                  text: '  ${m.title} · ${m.size}',
                   style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700,
-                    color: colors.primary,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w400,
+                    color: colors.onSurfaceVariant,
                   ),
                 ),
-            ],
+              ],
+            ),
+            style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 2),
           Text(
-            '${m.blurb}. ${m.recommend} 좋아요. 크기는 ${m.size}',
-            style: TextStyle(fontSize: 14, color: colors.onSurfaceVariant),
+            '${m.blurb}. ${m.recommend} 좋아요.',
+            style: TextStyle(fontSize: 15, color: colors.onSurfaceVariant),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
           Row(
             children: [
-              if (applying)
+              if (inUse && !applying)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: colors.primaryContainer,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    '사용 중',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: colors.primary,
+                    ),
+                  ),
+                )
+              else if (applying)
                 Row(
                   children: [
                     const SizedBox.square(
@@ -199,9 +242,30 @@ class VoiceSettingsScreen extends StatelessWidget {
                   ],
                 )
               else if (downloading)
-                Text(
-                  '내려받는 중 ${(downloads.fraction * 100).floor()}%',
-                  style: TextStyle(color: colors.onSurfaceVariant),
+                Expanded(
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(3),
+                          child: LinearProgressIndicator(
+                            value: downloads.fraction,
+                            minHeight: 6,
+                            backgroundColor: colors.outlineVariant,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Text(
+                        '${(downloads.fraction * 100).floor()}%',
+                        style: TextStyle(color: colors.onSurfaceVariant),
+                      ),
+                      TextButton(
+                        onPressed: downloads.cancel,
+                        child: const Text('취소'),
+                      ),
+                    ],
+                  ),
                 )
               else if (!onPhone)
                 OutlinedButton.icon(
@@ -221,7 +285,7 @@ class VoiceSettingsScreen extends StatelessWidget {
                   style: FilledButton.styleFrom(minimumSize: const Size(0, 44)),
                   child: const Text('이 모델 쓰기'),
                 ),
-              const Spacer(),
+              if (!downloading) const Spacer(),
               if (onPhone)
                 TextButton.icon(
                   onPressed: locked ? null : () => _delete(context, m),

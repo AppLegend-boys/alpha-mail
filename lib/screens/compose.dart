@@ -470,7 +470,8 @@ class _ComposeScreenState extends State<ComposeScreen> {
       children: [
         if (_status case (final title, final hint)) ...[
           VoiceCard(
-            borderColor: running ? colors.primary : null,
+            // Ink-tinted while the voice flow runs, as mockup B's 듣고 있어요.
+            color: running ? colors.primaryContainer : null,
             child: Semantics(
               liveRegion: true,
               child: Row(
@@ -500,136 +501,160 @@ class _ComposeScreenState extends State<ComposeScreen> {
               ),
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 12),
         ],
-        // One line per header, like a mail app's compose screen.
-        for (final (label, field) in [
-          (
-            '보내는 사람',
-            !reply && widget.accounts.length > 1
-                ? DropdownButton<MailAccount>(
-                    value: _sender,
-                    isDense: true,
-                    isExpanded: true,
-                    underline: const SizedBox(),
-                    style: text.copyWith(color: colors.onSurface),
-                    items: [
-                      for (final a in widget.accounts)
-                        DropdownMenuItem(value: a, child: Text(a.address)),
+        // The headers and the body in one white group, a line per header,
+        // like a mail app's compose screen.
+        VoiceCard(
+          padding: EdgeInsets.zero,
+          child: Column(
+            children: [
+              for (final (label, field) in [
+                (
+                  '보내는 사람',
+                  !reply && widget.accounts.length > 1
+                      ? DropdownButton<MailAccount>(
+                          value: _sender,
+                          isDense: true,
+                          isExpanded: true,
+                          underline: const SizedBox(),
+                          style: text.copyWith(color: colors.onSurface),
+                          items: [
+                            for (final a in widget.accounts)
+                              DropdownMenuItem(
+                                value: a,
+                                child: Text(a.address),
+                              ),
+                          ],
+                          onChanged: (a) => setState(() => _sender = a),
+                        )
+                      : Text(_sender?.address ?? '예시 계정', style: text),
+                ),
+                (
+                  '받는 사람',
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _to,
+                          style: text,
+                          keyboardType: TextInputType.emailAddress,
+                          onChanged: (typed) {
+                            // A typed @ means a whole address; the menu steps aside.
+                            if (typed.contains('@') && _domain != null) {
+                              setState(() => _domain = null);
+                            }
+                            _edited(typed);
+                          },
+                          decoration: bare.copyWith(
+                            hintText: _domain == null ? '메일 주소' : '아이디',
+                          ),
+                        ),
+                      ),
+                      // The field keeps the ID; the address after @ sits here
+                      // until sending. Empty means 직접 입력.
+                      PopupMenuButton<String>(
+                        tooltip: '@ 뒤 주소 고르기',
+                        onSelected: (domain) {
+                          // 직접 입력 puts the whole address in the field to edit;
+                          // a domain keeps only the ID.
+                          final typed = domain.isEmpty
+                              ? _address
+                              : _to.text.trim().split('@').first;
+                          _to.value = TextEditingValue(
+                            text: typed,
+                            selection: TextSelection.collapsed(
+                              offset: typed.length,
+                            ),
+                          );
+                          setState(
+                            () => _domain = domain.isEmpty ? null : domain,
+                          );
+                          _edited(typed);
+                        },
+                        itemBuilder: (_) => [
+                          for (final d in _domains)
+                            PopupMenuItem(value: d, child: Text('@$d')),
+                          const PopupMenuItem(value: '', child: Text('직접 입력')),
+                        ],
+                        child: Padding(
+                          padding: const EdgeInsets.only(left: 8),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                _domain == null ? '@주소' : '@$_domain',
+                                style: _domain == null
+                                    ? TextStyle(
+                                        fontSize: 15,
+                                        color: colors.onSurfaceVariant,
+                                      )
+                                    : text,
+                              ),
+                              Icon(
+                                Icons.arrow_drop_down_rounded,
+                                color: colors.onSurfaceVariant,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                     ],
-                    onChanged: (a) => setState(() => _sender = a),
-                  )
-                : Text(_sender?.address ?? '예시 계정', style: text),
-          ),
-          (
-            '받는 사람',
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _to,
+                  ),
+                ),
+                (
+                  '제목',
+                  TextField(
+                    controller: _subject,
                     style: text,
-                    keyboardType: TextInputType.emailAddress,
-                    onChanged: (typed) {
-                      // A typed @ means a whole address; the menu steps aside.
-                      if (typed.contains('@') && _domain != null) {
-                        setState(() => _domain = null);
-                      }
-                      _edited(typed);
-                    },
-                    decoration: bare.copyWith(
-                      hintText: _domain == null ? '메일 주소' : '아이디',
-                    ),
+                    onChanged: _edited,
+                    decoration: bare,
                   ),
                 ),
-                // The field keeps the ID; the address after @ sits here
-                // until sending. Empty means 직접 입력.
-                PopupMenuButton<String>(
-                  tooltip: '@ 뒤 주소 고르기',
-                  onSelected: (domain) {
-                    // 직접 입력 puts the whole address in the field to edit;
-                    // a domain keeps only the ID.
-                    final typed = domain.isEmpty
-                        ? _address
-                        : _to.text.trim().split('@').first;
-                    _to.value = TextEditingValue(
-                      text: typed,
-                      selection: TextSelection.collapsed(offset: typed.length),
-                    );
-                    setState(() => _domain = domain.isEmpty ? null : domain);
-                    _edited(typed);
-                  },
-                  itemBuilder: (_) => [
-                    for (final d in _domains)
-                      PopupMenuItem(value: d, child: Text('@$d')),
-                    const PopupMenuItem(value: '', child: Text('직접 입력')),
-                  ],
-                  child: Padding(
-                    padding: const EdgeInsets.only(left: 8),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          _domain == null ? '@주소' : '@$_domain',
-                          style: _domain == null
-                              ? TextStyle(
-                                  fontSize: 15,
-                                  color: colors.onSurfaceVariant,
-                                )
-                              : text,
-                        ),
-                        Icon(
-                          Icons.arrow_drop_down_rounded,
-                          color: colors.onSurfaceVariant,
-                        ),
-                      ],
-                    ),
+              ]) ...[
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 14,
                   ),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 84,
+                        child: Text(
+                          label,
+                          style: TextStyle(
+                            fontSize: 15,
+                            color: colors.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                      Expanded(child: field),
+                    ],
+                  ),
+                ),
+                Divider(
+                  height: 0.5,
+                  thickness: 0.5,
+                  indent: 16,
+                  color: colors.outlineVariant,
                 ),
               ],
-            ),
-          ),
-          (
-            '제목',
-            TextField(
-              controller: _subject,
-              style: text,
-              onChanged: _edited,
-              decoration: bare,
-            ),
-          ),
-        ]) ...[
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            child: Row(
-              children: [
-                SizedBox(
-                  width: 84,
-                  child: Text(
-                    label,
-                    style: TextStyle(
-                      fontSize: 15,
-                      color: colors.onSurfaceVariant,
-                    ),
-                  ),
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: TextField(
+                  controller: _body,
+                  minLines: 8,
+                  maxLines: null,
+                  keyboardType: TextInputType.multiline,
+                  onChanged: _edited,
+                  style: const TextStyle(fontSize: 17, height: 1.6),
+                  decoration: bare.copyWith(hintText: '내용을 입력하세요'),
                 ),
-                Expanded(child: field),
-              ],
-            ),
+              ),
+            ],
           ),
-          Divider(height: 1, color: colors.outlineVariant),
-        ],
-        const SizedBox(height: 12),
-        TextField(
-          controller: _body,
-          minLines: 8,
-          maxLines: null,
-          keyboardType: TextInputType.multiline,
-          onChanged: _edited,
-          style: const TextStyle(fontSize: 17, height: 1.6),
-          decoration: bare.copyWith(hintText: '내용을 입력하세요'),
         ),
-        Divider(height: 1, color: colors.outlineVariant),
         // Room so the last line can scroll out from under the send pill.
         const SizedBox(height: 104),
       ],

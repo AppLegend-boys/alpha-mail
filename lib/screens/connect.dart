@@ -8,9 +8,10 @@ import '../mail/mail_account.dart';
 import '../widgets.dart';
 import 'help.dart';
 
-/// First step of connecting: pick the mail service. Any number of accounts
-/// can be linked, several per service too.
-class MailProviderScreen extends StatelessWidget {
+/// 메일 연동, on one screen as in mockup B: the linked accounts, then a
+/// switch between Naver, Gmail and Outlook with that service's sign-in.
+/// Any number of accounts can be linked, several per service too.
+class MailProviderScreen extends StatefulWidget {
   const MailProviderScreen({
     super.key,
     required this.from,
@@ -23,135 +24,145 @@ class MailProviderScreen extends StatelessWidget {
 
   /// Linked accounts, of every service.
   final List<MailAccount> accounts;
-  final Future<void> Function(MailAccount account, Unread unread) onAdded;
-  final Future<void> Function(MailAccount account) onRemoved;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    Widget provider(
-      String name,
-      String mark,
-      Color markColor,
-      String sub, {
-      VoidCallback? onTap,
-      bool linked = false,
-    }) => Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: VoiceCard(
-        onTap:
-            onTap ??
-            () => ScaffoldMessenger.of(
-              context,
-            ).showSnackBar(SnackBar(content: Text('$name 연동은 곧 지원할 예정이에요'))),
-        child: Row(
-          children: [
-            ServiceBadge(mark, markColor, size: 40),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '$name 연동',
-                    style: const TextStyle(
-                      fontSize: 17,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    sub,
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: colors.onSurfaceVariant,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            if (onTap == null)
-              StatusChip('곧 지원', colors.onSurfaceVariant)
-            else ...[
-              StatusChip(
-                linked ? '연결됨' : '연결 안 됨',
-                linked ? colors.primary : colors.onSurfaceVariant,
-              ),
-              const SizedBox(width: 4),
-              Icon(Icons.chevron_right_rounded, color: colors.onSurfaceVariant),
-            ],
-          ],
-        ),
-      ),
-    );
-    return AppPage(
-      trail: [...from, '메일 연동하기'],
-      children: [
-        const ScreenTitle('메일 연동하기', '어떤 메일을 연결할까요?'),
-        const SizedBox(height: 20),
-        for (final (service, sub) in [
-          (MailService.naver, '아이디와 애플리케이션 비밀번호로 연결해요'),
-          (MailService.gmail, '구글 계정으로 로그인해서 연결해요'),
-          (MailService.outlook, '마이크로소프트 계정으로 로그인해서 연결해요'),
-        ])
-          provider(
-            service.label,
-            service.mark,
-            service.color,
-            switch ([
-              for (final a in accounts)
-                if (a.service == service) a.address,
-            ]) {
-              [] => sub,
-              final linked => '${linked.join(', ')} 연결됨',
-            },
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => MailConnectScreen(
-                  from: [...from, '메일 연동하기'],
-                  service: service,
-                  accounts: accounts,
-                  onAdded: onAdded,
-                  onRemoved: onRemoved,
-                ),
-              ),
-            ),
-            linked: accounts.any((a) => a.service == service),
-          ),
-      ],
-    );
-  }
-}
-
-/// Signs in to one mail service over IMAP: Naver with an app password,
-/// Gmail and Outlook with their own sign-in. The password or token stays in the keychain.
-/// Linking an address again replaces its saved login.
-class MailConnectScreen extends StatefulWidget {
-  const MailConnectScreen({
-    super.key,
-    required this.from,
-    required this.service,
-    required this.accounts,
-    required this.onAdded,
-    required this.onRemoved,
-  });
-
-  final List<String> from;
-  final MailService service;
-
-  /// Linked accounts, of every service.
-  final List<MailAccount> accounts;
 
   /// Saves the new account and shows its unread mails.
   final Future<void> Function(MailAccount account, Unread unread) onAdded;
   final Future<void> Function(MailAccount account) onRemoved;
 
   @override
-  State<MailConnectScreen> createState() => _MailConnectScreenState();
+  State<MailProviderScreen> createState() => _MailProviderScreenState();
 }
 
-class _MailConnectScreenState extends State<MailConnectScreen> {
+class _MailProviderScreenState extends State<MailProviderScreen> {
+  // The first service with nothing linked yet, as the likeliest to add.
+  late var _service = MailService.values.firstWhere(
+    (s) => !widget.accounts.any((a) => a.service == s),
+    orElse: () => MailService.naver,
+  );
+
+  Future<void> _disconnect(MailAccount account) async {
+    await account.revoke();
+    await widget.onRemoved(account);
+    if (!mounted) return;
+    // Back home, where the account list redraws.
+    Navigator.popUntil(context, (route) => route.isFirst);
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('${account.address} 연결을 해제했어요')));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final header = TextStyle(fontSize: 13, color: colors.onSurfaceVariant);
+    final linked = widget.accounts;
+    return AppPage(
+      trail: [...widget.from, '메일 연동'],
+      children: [
+        const ScreenTitle('', '메일 연동'),
+        const SizedBox(height: 20),
+        if (linked.isNotEmpty) ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 7),
+            child: Text('연결한 계정', style: header),
+          ),
+          VoiceCard(
+            padding: EdgeInsets.zero,
+            child: Column(
+              children: [
+                for (final (i, account) in linked.indexed) ...[
+                  if (i > 0)
+                    Divider(
+                      height: 0.5,
+                      thickness: 0.5,
+                      indent: 60,
+                      color: colors.outlineVariant,
+                    ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 6, 8, 6),
+                    child: Row(
+                      children: [
+                        ServiceBadge(
+                          account.service.mark,
+                          account.service.color,
+                          size: 30,
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Text(
+                            account.address,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 17),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: () => _disconnect(account),
+                          style: TextButton.styleFrom(
+                            foregroundColor: colors.error,
+                          ),
+                          child: const Text('연결 해제'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+        ],
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 7),
+          child: Text(
+            linked.isEmpty ? '어떤 메일을 연결할까요?' : '다른 계정 추가하기',
+            style: header,
+          ),
+        ),
+        SegmentedButton<MailService>(
+          showSelectedIcon: false,
+          segments: [
+            for (final s in MailService.values)
+              ButtonSegment(
+                value: s,
+                label: Text(s.label.replaceAll(' 메일', '')),
+              ),
+          ],
+          selected: {_service},
+          onSelectionChanged: (picked) =>
+              setState(() => _service = picked.first),
+          style: SegmentedButton.styleFrom(
+            backgroundColor: colors.surfaceContainer,
+            selectedBackgroundColor: colors.primary,
+            selectedForegroundColor: colors.onPrimary,
+            side: BorderSide(color: colors.outlineVariant),
+          ),
+        ),
+        const SizedBox(height: 12),
+        // Keyed by service so switching starts with empty fields.
+        _ConnectForm(
+          key: ValueKey(_service),
+          service: _service,
+          onAdded: widget.onAdded,
+        ),
+      ],
+    );
+  }
+}
+
+/// Signs in to one mail service over IMAP: Naver with an app password,
+/// Gmail and Outlook with their own sign-in. The password or token stays in
+/// the keychain. Linking an address again replaces its saved login.
+class _ConnectForm extends StatefulWidget {
+  const _ConnectForm({super.key, required this.service, required this.onAdded});
+
+  final MailService service;
+  final Future<void> Function(MailAccount account, Unread unread) onAdded;
+
+  @override
+  State<_ConnectForm> createState() => _ConnectFormState();
+}
+
+class _ConnectFormState extends State<_ConnectForm> {
   final _id = TextEditingController();
   final _password = TextEditingController();
   bool _busy = false;
@@ -184,7 +195,7 @@ class _MailConnectScreenState extends State<MailConnectScreen> {
       final unread = await account.fetchUnread();
       await widget.onAdded(account, unread);
       if (!mounted) return;
-      // Back home past the provider list.
+      // Back home, where the new account shows.
       Navigator.popUntil(context, (route) => route.isFirst);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -201,159 +212,123 @@ class _MailConnectScreenState extends State<MailConnectScreen> {
     }
   }
 
-  Future<void> _disconnect(MailAccount account) async {
-    await account.revoke();
-    await widget.onRemoved(account);
-    if (!mounted) return;
-    // Back home past the provider list.
-    Navigator.popUntil(context, (route) => route.isFirst);
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('${account.address} 연결을 해제했어요')));
-  }
-
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final hint = TextStyle(fontSize: 14, color: colors.onSurfaceVariant);
-    InputDecoration field(String label, {String? suffix, Widget? icon}) =>
-        InputDecoration(
-          labelText: label,
-          suffixText: suffix,
-          suffixIcon: icon,
-          filled: true,
-          fillColor: colors.surfaceContainer,
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide(color: colors.outlineVariant),
-          ),
-        );
+    final hint = TextStyle(fontSize: 13, color: colors.onSurfaceVariant);
     final service = widget.service;
-    final linked = [
-      for (final a in widget.accounts)
-        if (a.service == service) a,
-    ];
     final naver = service == MailService.naver;
-    return AppPage(
-      trail: [...widget.from, service.label],
+    // A label column and a borderless input, one row of a white group.
+    Widget field(String label, Widget input) => Padding(
+      padding: const EdgeInsets.only(left: 16),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 104,
+            child: Text(label, style: const TextStyle(fontSize: 15)),
+          ),
+          Expanded(child: input),
+        ],
+      ),
+    );
+    const bare = InputDecoration(
+      border: InputBorder.none,
+      contentPadding: EdgeInsets.symmetric(vertical: 14),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        ScreenTitle('메일 연동하기', service.label),
-        const SizedBox(height: 20),
-        if (linked.isNotEmpty) ...[
-          for (final account in linked) ...[
-            VoiceCard(
-              child: Row(
+        if (naver) ...[
+          VoiceCard(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Column(
+              children: [
+                _SetupStep(
+                  number: 1,
+                  title: '2단계 인증 켜고 애플리케이션 비밀번호 만들기',
+                  detail:
+                      '보안설정에서 2단계 인증의 [관리] → 애플리케이션 비밀번호 관리에서 '
+                      '"직접 입력"을 고르고, 이름에 "Alpha Mail"을 붙여 넣어 [생성]을 눌러요. '
+                      '"올바르지 않은 접근"이 뜨면 naver.com에서 내 프로필 → 네이버ID → '
+                      '보안설정으로 들어가 주세요.',
+                  action: '네이버 보안설정 열기',
+                  url: naverSecurity,
+                  copy: 'Alpha Mail',
+                ),
+                _SetupStep(
+                  number: 2,
+                  title: 'IMAP/SMTP 사용 켜기',
+                  detail: '"IMAP/SMTP 사용"을 "사용함"으로 고르고 저장해요.',
+                  action: '네이버 IMAP 설정 열기',
+                  url: naverMail,
+                ),
+                const _SetupStep(
+                  number: 3,
+                  title: '아래에 아이디와 애플리케이션 비밀번호 넣기',
+                  detail: '평소 로그인 비밀번호로는 연결되지 않아요.',
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          AutofillGroup(
+            child: VoiceCard(
+              padding: EdgeInsets.zero,
+              child: Column(
                 children: [
-                  Icon(Icons.check_circle_rounded, color: colors.primary),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          '연결됨',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        Text(account.address, style: hint),
-                      ],
+                  field(
+                    '아이디',
+                    TextField(
+                      controller: _id,
+                      enabled: !_busy,
+                      autofillHints: const [AutofillHints.username],
+                      textInputAction: TextInputAction.next,
+                      decoration: bare.copyWith(
+                        hintText: '네이버 아이디',
+                        suffixText: '@naver.com  ',
+                      ),
                     ),
                   ),
-                  TextButton(
-                    onPressed: () => _disconnect(account),
-                    child: const Text('연결 해제'),
+                  Divider(
+                    height: 0.5,
+                    thickness: 0.5,
+                    indent: 16,
+                    color: colors.outlineVariant,
+                  ),
+                  field(
+                    '앱 비밀번호',
+                    TextField(
+                      controller: _password,
+                      enabled: !_busy,
+                      obscureText: _hidden,
+                      autofillHints: const [AutofillHints.password],
+                      onSubmitted: (_) => _connect(),
+                      decoration: bare.copyWith(
+                        hintText: '애플리케이션 비밀번호',
+                        suffixIcon: IconButton(
+                          tooltip: _hidden ? '비밀번호 보기' : '비밀번호 숨기기',
+                          onPressed: () => setState(() => _hidden = !_hidden),
+                          icon: Icon(
+                            _hidden
+                                ? Icons.visibility_outlined
+                                : Icons.visibility_off_outlined,
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
                 ],
               ),
             ),
-            const SizedBox(height: 10),
-          ],
-          const SizedBox(height: 18),
-          Text('다른 계정 추가하기', style: hint),
-          const SizedBox(height: 12),
-        ] else if (naver) ...[
-          Text(
-            '네이버는 외부 앱에서 메일을 열 때 2단계 인증과 '
-            '애플리케이션 비밀번호를 꼭 쓰도록 하고 있어요. '
-            '처음 한 번만 아래 순서대로 설정해 주세요.',
-            style: hint.copyWith(height: 1.6),
           ),
-          const SizedBox(height: 14),
-          _SetupStep(
-            number: 1,
-            title: '2단계 인증 켜고 애플리케이션 비밀번호 만들기',
-            detail:
-                '버튼으로 네이버 보안설정을 연 뒤\n'
-                '2단계 인증의 [관리] → 비밀번호 한 번 더 입력 → '
-                '애플리케이션 비밀번호 관리에서 종류를 "직접 입력"으로 고르고, '
-                '이름 칸에 "Alpha Mail"을 붙여 넣어 [생성]을 눌러요.\n'
-                '2단계 인증이 꺼져 있다면 먼저 켜 주세요.\n'
-                '"올바르지 않은 접근"이 뜨면 naver.com에서 '
-                '내 프로필 → 네이버ID → 보안설정으로 들어가 주세요.',
-            action: '네이버 보안설정 열기',
-            url: naverSecurity,
-            copy: 'Alpha Mail',
-          ),
-          const SizedBox(height: 10),
-          _SetupStep(
-            number: 2,
-            title: 'IMAP/SMTP 사용 켜기',
-            detail:
-                '버튼을 누르면 네이버 메일의 IMAP 설정 화면이 바로 열려요. '
-                '"IMAP/SMTP 사용"을 "사용함"으로 고르고 저장해요.',
-            action: 'IMAP 설정 바로 열기',
-            url: naverMail,
-          ),
-          const SizedBox(height: 10),
-          const _SetupStep(
-            number: 3,
-            title: '아래에 아이디와 애플리케이션 비밀번호 넣기',
-            detail: '1번에서 만든 비밀번호를 그대로 붙여 넣어요. 평소 로그인 비밀번호로는 연결되지 않아요.',
-          ),
-          const SizedBox(height: 24),
-        ] else ...[
-          Text(
-            '버튼을 누르면 ${service == MailService.outlook ? '마이크로소프트' : '구글'} 로그인 화면이 열려요. '
-            '계정을 고르고 메일 접근을 허용하면 바로 연결돼요. '
-            '앱 비밀번호나 IMAP 설정은 필요 없어요.',
-            style: hint.copyWith(height: 1.6),
-          ),
-        ],
-        if (naver)
-          AutofillGroup(
-            child: Column(
-              children: [
-                TextField(
-                  controller: _id,
-                  enabled: !_busy,
-                  autofillHints: const [AutofillHints.username],
-                  textInputAction: TextInputAction.next,
-                  decoration: field('네이버 아이디', suffix: '@naver.com'),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _password,
-                  enabled: !_busy,
-                  obscureText: _hidden,
-                  autofillHints: const [AutofillHints.password],
-                  onSubmitted: (_) => _connect(),
-                  decoration: field(
-                    '애플리케이션 비밀번호',
-                    icon: IconButton(
-                      tooltip: _hidden ? '비밀번호 보기' : '비밀번호 숨기기',
-                      onPressed: () => setState(() => _hidden = !_hidden),
-                      icon: Icon(
-                        _hidden
-                            ? Icons.visibility_outlined
-                            : Icons.visibility_off_outlined,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
+        ] else
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Text(
+              '버튼을 누르면 ${service == MailService.outlook ? '마이크로소프트' : '구글'} '
+              '로그인 화면이 열려요. 계정을 고르고 메일 접근을 허용하면 바로 연결돼요. '
+              '앱 비밀번호나 IMAP 설정은 필요 없어요.',
+              style: hint.copyWith(fontSize: 15, height: 1.5),
             ),
           ),
         if (_error case final error?) ...[
@@ -363,7 +338,7 @@ class _MailConnectScreenState extends State<MailConnectScreen> {
             style: TextStyle(color: colors.error, height: 1.5),
           ),
         ],
-        const SizedBox(height: 20),
+        const SizedBox(height: 16),
         FilledButton(
           onPressed: _busy ? null : _connect,
           child: _busy
@@ -372,23 +347,37 @@ class _MailConnectScreenState extends State<MailConnectScreen> {
                   child: CircularProgressIndicator(strokeWidth: 2.5),
                 )
               : Text(switch (service) {
-                  MailService.naver => '연결하기',
+                  MailService.naver => '네이버 연결하기',
                   MailService.gmail => 'Google로 로그인',
                   MailService.outlook => 'Microsoft로 로그인',
                 }),
         ),
-        const SizedBox(height: 14),
-        Text(
-          naver
-              ? '비밀번호는 이 기기의 보안 저장소에만 저장돼요.\n'
-                    '메일은 다른 서버를 거치지 않고 네이버와 직접 주고받아요.'
-              : service == MailService.outlook
-              ? '마이크로소프트 비밀번호는 앱이 보지 않아요. 마이크로소프트가 준 접근 권한만\n'
-                    '이 기기의 보안 저장소에 저장하고, 메일은 마이크로소프트와 직접 주고받아요.'
-              : '구글 비밀번호는 앱이 보지 않아요. 구글이 준 접근 권한만\n'
-                    '이 기기의 보안 저장소에 저장하고, 메일은 구글과 직접 주고받아요.',
-          textAlign: TextAlign.center,
-          style: hint.copyWith(fontSize: 13, height: 1.5),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Icon(
+                  Icons.lock_outline_rounded,
+                  size: 14,
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  naver
+                      ? '비밀번호는 이 기기의 보안 저장소에만 저장돼요. '
+                            '메일은 다른 서버를 거치지 않고 네이버와 직접 주고받아요.'
+                      : '비밀번호는 앱이 보지 않아요. 받은 접근 권한만 이 기기의 '
+                            '보안 저장소에 저장하고, 메일은 메일 서버와 직접 주고받아요.',
+                  style: hint.copyWith(height: 1.4),
+                ),
+              ),
+            ],
+          ),
         ),
       ],
     );
@@ -450,7 +439,8 @@ class _SetupStep extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return VoiceCard(
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -474,15 +464,15 @@ class _SetupStep extends StatelessWidget {
                 Text(
                   title,
                   style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w700,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
                 const SizedBox(height: 4),
                 Text(
                   detail,
                   style: TextStyle(
-                    fontSize: 14,
+                    fontSize: 13,
                     height: 1.5,
                     color: colors.onSurfaceVariant,
                   ),

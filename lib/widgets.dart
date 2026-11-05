@@ -590,8 +590,7 @@ mixin SafeNotifier on ChangeNotifier {
 class Brand extends StatelessWidget {
   const Brand({super.key});
 
-  // Lockup from design/logo, black "alpha-" and [accent] "mail", as in the
-  // blue-accent drafts.
+  // Lockup from design/logo: black "alpha-" and "mail" in the pen ink.
   @override
   Widget build(BuildContext context) => Image.asset(
     'assets/brand/logo-horizontal-accent.png',
