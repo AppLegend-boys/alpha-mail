@@ -121,6 +121,45 @@ void main() {
     expect(spokenBody('보낸 사람: 홍길동\n안녕'), '보낸 사람: 홍길동\n안녕');
   });
 
+  test('code review cases: what reading aloud got wrong', () {
+    // 1. A line over the cap must not jump ahead of the lines before it.
+    final long = '가' * 1500;
+    expect(speechParts('인사\n$long').toList(), [
+      '인사\n',
+      '가' * 1000,
+      '${'가' * 500}\n',
+    ]);
+    // 2. IMAP bodies keep CRLF; the signature still goes.
+    expect(spokenBody('확인했습니다.\r\n-- \r\n홍길동 010-1234-5678'), '확인했습니다.');
+    // 3. Ordinary lines that only look like a quote or a footer stay.
+    expect(
+      spokenBody('일정 안내\nFrom: ICN  To: NRT\n출발 9시'),
+      '일정 안내\nFrom: ICN  To: NRT\n출발 9시',
+    );
+    expect(
+      spokenBody('하나\n둘\nHere is what he wrote:\n그 내용'),
+      '하나\n둘\nHere is what he wrote:\n그 내용',
+    );
+    expect(
+      spokenBody('하나\n둘\n셋\n광고 수신거부 요청드립니다\n감사합니다'),
+      '하나\n둘\n셋\n광고 수신거부 요청드립니다\n감사합니다',
+    );
+    // ...while real Outlook and Gmail quote headers still cut.
+    expect(spokenBody('네.\nFrom: 홍길동 <a@b.com>\nSent: Monday\n이전 내용'), '네.');
+    expect(
+      spokenBody(
+        '네.\nOn Mon, Nov 2, 2026 at 3:00 PM Hong <a@b.com> wrote:\n> x',
+      ),
+      '네.',
+    );
+    // 5. Years and price ranges are not phone numbers; 1588 numbers are.
+    expect(speakable('1990-2000년대'), '1990-2000년대');
+    expect(speakable('1500-2000원'), '1500-2000원');
+    expect(speakable('고객센터 1588-1234'), '고객센터 일오팔팔, 일이삼사');
+    // 6. A time range keeps its 에서.
+    expect(speakable('10:00~12:00'), '10시에서 12시');
+  });
+
   test('htmlToText keeps line breaks and drops markup', () {
     const html =
         '<html><head><style>p{color:red}</style></head><body>'

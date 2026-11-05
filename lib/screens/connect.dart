@@ -40,6 +40,10 @@ class _MailProviderScreenState extends State<MailProviderScreen> {
     orElse: () => MailService.naver,
   );
 
+  /// Set while the form signs in; switching service then would drop it
+  /// mid-way, adding the account with no word of it.
+  bool _connecting = false;
+
   Future<void> _disconnect(MailAccount account) async {
     await account.revoke();
     await widget.onRemoved(account);
@@ -54,7 +58,6 @@ class _MailProviderScreenState extends State<MailProviderScreen> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final header = TextStyle(fontSize: 13, color: colors.onSurfaceVariant);
     final linked = widget.accounts;
     return AppPage(
       trail: [...widget.from, '메일 연동'],
@@ -62,62 +65,42 @@ class _MailProviderScreenState extends State<MailProviderScreen> {
         const ScreenTitle('', '메일 연동'),
         const SizedBox(height: 20),
         if (linked.isNotEmpty) ...[
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 7),
-            child: Text('연결한 계정', style: header),
-          ),
-          VoiceCard(
-            padding: EdgeInsets.zero,
-            child: Column(
-              children: [
-                for (final (i, account) in linked.indexed) ...[
-                  if (i > 0)
-                    Divider(
-                      height: 0.5,
-                      thickness: 0.5,
-                      indent: 60,
-                      color: colors.outlineVariant,
-                    ),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 6, 8, 6),
-                    child: Row(
-                      children: [
-                        ServiceBadge(
-                          account.service.mark,
-                          account.service.color,
-                          size: 30,
+          MenuGroup(
+            header: '연결한 계정',
+            bottom: 24,
+            children: [
+              for (final account in linked)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 6, 8, 6),
+                  child: Row(
+                    children: [
+                      ServiceBadge(
+                        account.service.mark,
+                        account.service.color,
+                        size: 30,
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Text(
+                          account.address,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 17),
                         ),
-                        const SizedBox(width: 14),
-                        Expanded(
-                          child: Text(
-                            account.address,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontSize: 17),
-                          ),
+                      ),
+                      TextButton(
+                        onPressed: () => _disconnect(account),
+                        style: TextButton.styleFrom(
+                          foregroundColor: colors.error,
                         ),
-                        TextButton(
-                          onPressed: () => _disconnect(account),
-                          style: TextButton.styleFrom(
-                            foregroundColor: colors.error,
-                          ),
-                          child: const Text('연결 해제'),
-                        ),
-                      ],
-                    ),
+                        child: const Text('연결 해제'),
+                      ),
+                    ],
                   ),
-                ],
-              ],
-            ),
+                ),
+            ],
           ),
-          const SizedBox(height: 24),
         ],
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 7),
-          child: Text(
-            linked.isEmpty ? '어떤 메일을 연결할까요?' : '다른 계정 추가하기',
-            style: header,
-          ),
-        ),
+        GroupLabel(linked.isEmpty ? '어떤 메일을 연결할까요?' : '다른 계정 추가하기'),
         SegmentedButton<MailService>(
           showSelectedIcon: false,
           segments: [
@@ -128,8 +111,9 @@ class _MailProviderScreenState extends State<MailProviderScreen> {
               ),
           ],
           selected: {_service},
-          onSelectionChanged: (picked) =>
-              setState(() => _service = picked.first),
+          onSelectionChanged: _connecting
+              ? null
+              : (picked) => setState(() => _service = picked.first),
           style: SegmentedButton.styleFrom(
             backgroundColor: colors.surfaceContainer,
             selectedBackgroundColor: colors.primary,
@@ -143,6 +127,7 @@ class _MailProviderScreenState extends State<MailProviderScreen> {
           key: ValueKey(_service),
           service: _service,
           onAdded: widget.onAdded,
+          onBusy: (busy) => setState(() => _connecting = busy),
         ),
       ],
     );
@@ -153,10 +138,18 @@ class _MailProviderScreenState extends State<MailProviderScreen> {
 /// Gmail and Outlook with their own sign-in. The password or token stays in
 /// the keychain. Linking an address again replaces its saved login.
 class _ConnectForm extends StatefulWidget {
-  const _ConnectForm({super.key, required this.service, required this.onAdded});
+  const _ConnectForm({
+    super.key,
+    required this.service,
+    required this.onAdded,
+    required this.onBusy,
+  });
 
   final MailService service;
   final Future<void> Function(MailAccount account, Unread unread) onAdded;
+
+  /// Told when signing in starts and ends.
+  final ValueChanged<bool> onBusy;
 
   @override
   State<_ConnectForm> createState() => _ConnectFormState();
@@ -187,6 +180,7 @@ class _ConnectFormState extends State<_ConnectForm> {
       _busy = true;
       _error = null;
     });
+    widget.onBusy(true);
     try {
       final account = naver
           ? MailAccount(_id.text, _password.text)
@@ -208,7 +202,10 @@ class _ConnectFormState extends State<_ConnectForm> {
       debugPrint('mail connect failed: $error');
       if (mounted) setState(() => _error = mailError(widget.service, error));
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) {
+        setState(() => _busy = false);
+        widget.onBusy(false);
+      }
     }
   }
 
@@ -272,53 +269,46 @@ class _ConnectFormState extends State<_ConnectForm> {
           ),
           const SizedBox(height: 12),
           AutofillGroup(
-            child: VoiceCard(
-              padding: EdgeInsets.zero,
-              child: Column(
-                children: [
-                  field(
-                    '아이디',
-                    TextField(
-                      controller: _id,
-                      enabled: !_busy,
-                      autofillHints: const [AutofillHints.username],
-                      textInputAction: TextInputAction.next,
-                      decoration: bare.copyWith(
-                        hintText: '네이버 아이디',
-                        suffixText: '@naver.com  ',
-                      ),
+            child: MenuGroup(
+              indent: 16,
+              bottom: 0,
+              children: [
+                field(
+                  '아이디',
+                  TextField(
+                    controller: _id,
+                    enabled: !_busy,
+                    autofillHints: const [AutofillHints.username],
+                    textInputAction: TextInputAction.next,
+                    decoration: bare.copyWith(
+                      hintText: '네이버 아이디',
+                      suffixText: '@naver.com  ',
                     ),
                   ),
-                  Divider(
-                    height: 0.5,
-                    thickness: 0.5,
-                    indent: 16,
-                    color: colors.outlineVariant,
-                  ),
-                  field(
-                    '앱 비밀번호',
-                    TextField(
-                      controller: _password,
-                      enabled: !_busy,
-                      obscureText: _hidden,
-                      autofillHints: const [AutofillHints.password],
-                      onSubmitted: (_) => _connect(),
-                      decoration: bare.copyWith(
-                        hintText: '애플리케이션 비밀번호',
-                        suffixIcon: IconButton(
-                          tooltip: _hidden ? '비밀번호 보기' : '비밀번호 숨기기',
-                          onPressed: () => setState(() => _hidden = !_hidden),
-                          icon: Icon(
-                            _hidden
-                                ? Icons.visibility_outlined
-                                : Icons.visibility_off_outlined,
-                          ),
+                ),
+                field(
+                  '앱 비밀번호',
+                  TextField(
+                    controller: _password,
+                    enabled: !_busy,
+                    obscureText: _hidden,
+                    autofillHints: const [AutofillHints.password],
+                    onSubmitted: (_) => _connect(),
+                    decoration: bare.copyWith(
+                      hintText: '애플리케이션 비밀번호',
+                      suffixIcon: IconButton(
+                        tooltip: _hidden ? '비밀번호 보기' : '비밀번호 숨기기',
+                        onPressed: () => setState(() => _hidden = !_hidden),
+                        icon: Icon(
+                          _hidden
+                              ? Icons.visibility_outlined
+                              : Icons.visibility_off_outlined,
                         ),
                       ),
                     ),
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ] else

@@ -439,23 +439,7 @@ class _HomeScreenState extends State<HomeScreen> {
         onTap: _openConnect,
       ),
     ];
-    return VoiceCard(
-      padding: EdgeInsets.zero,
-      child: Column(
-        children: [
-          for (final (i, r) in rows.indexed) ...[
-            if (i > 0)
-              Divider(
-                height: 0.5,
-                thickness: 0.5,
-                indent: 60,
-                color: colors.outlineVariant,
-              ),
-            r,
-          ],
-        ],
-      ),
-    );
+    return MenuGroup(header: '계정', bottom: 0, children: rows);
   }
 
   /// Hides the "읽어드릴까요?" card until the app opens again.
@@ -824,13 +808,6 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const SizedBox(height: 28),
             ],
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 7),
-              child: Text(
-                '계정',
-                style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
-              ),
-            ),
             _accountGroup(colors),
             if (_inbox.error case final error?) ...[
               const SizedBox(height: 10),

@@ -121,30 +121,68 @@ class VoiceCard extends StatelessWidget {
   }
 }
 
-/// [MenuRow]s as one white group with hairlines between them, as in iOS
-/// settings.
+/// Rows as one white group with hairlines between them, as in iOS
+/// settings: [MenuRow]s, accounts, mails, form fields. A grey [header]
+/// names it.
 class MenuGroup extends StatelessWidget {
-  const MenuGroup({super.key, required this.children});
+  const MenuGroup({
+    super.key,
+    required this.children,
+    this.header,
+    this.indent = 60,
+    this.bottom = 20,
+  });
   final List<Widget> children;
+  final String? header;
+
+  /// Where the hairlines start: past a row's icon (60) or at its text.
+  final double indent;
+
+  /// Space below, before what follows.
+  final double bottom;
 
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(bottom: 20),
-    child: VoiceCard(
-      padding: EdgeInsets.zero,
-      child: Column(
-        children: [
-          for (final (i, row) in children.indexed) ...[
-            if (i > 0)
-              Divider(
-                height: 0.5,
-                thickness: 0.5,
-                indent: 60,
-                color: Theme.of(context).colorScheme.outlineVariant,
-              ),
-            row,
-          ],
-        ],
+    padding: EdgeInsets.only(bottom: bottom),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (header case final header?) GroupLabel(header),
+        VoiceCard(
+          padding: EdgeInsets.zero,
+          child: Column(
+            children: [
+              for (final (i, row) in children.indexed) ...[
+                if (i > 0)
+                  Divider(
+                    height: 0.5,
+                    thickness: 0.5,
+                    indent: indent,
+                    color: Theme.of(context).colorScheme.outlineVariant,
+                  ),
+                row,
+              ],
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+/// Small grey label over a group, inset to line up with its rows' text.
+class GroupLabel extends StatelessWidget {
+  const GroupLabel(this.text, {super.key});
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(16, 0, 16, 7),
+    child: Text(
+      text,
+      style: TextStyle(
+        fontSize: 13,
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
       ),
     ),
   );

@@ -312,39 +312,30 @@ class _MailFolderScreenState extends State<MailFolderScreen> {
               ? const Center(child: CircularProgressIndicator())
               : Text('메일이 없어요', textAlign: TextAlign.center, style: hint),
         if (mails.isNotEmpty)
-          VoiceCard(
-            padding: EdgeInsets.zero,
-            child: Column(
-              children: [
-                for (final (i, mail) in mails.indexed) ...[
-                  if (i > 0)
-                    Divider(
-                      height: 0.5,
-                      thickness: 0.5,
-                      indent: 32,
-                      color: Theme.of(context).colorScheme.outlineVariant,
-                    ),
-                  MailTile(
-                    mail,
-                    read: _isRead(mail),
-                    showSource: _only == null && accounts.length > 1,
-                    onTap: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => BriefingScreen(
-                          from: [...widget.from, widget.folder.label],
-                          mails: mails,
-                          index: i,
-                          onRead: _onRead,
-                          autoRead: false,
-                          speech: widget.speech,
-                        ),
+          MenuGroup(
+            indent: 32,
+            bottom: 0,
+            children: [
+              for (final (i, mail) in mails.indexed)
+                MailTile(
+                  mail,
+                  read: _isRead(mail),
+                  showSource: _only == null && accounts.length > 1,
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => BriefingScreen(
+                        from: [...widget.from, widget.folder.label],
+                        mails: mails,
+                        index: i,
+                        onRead: _onRead,
+                        autoRead: false,
+                        speech: widget.speech,
                       ),
                     ),
                   ),
-                ],
-              ],
-            ),
+                ),
+            ],
           ),
         if (_loading && mails.isNotEmpty) ...[
           const SizedBox(height: 16),
@@ -383,6 +374,8 @@ class _MailFolderScreenState extends State<MailFolderScreen> {
 
 /// One row of a mail list: sender, time, subject and the first body line.
 /// Read ones fade, as in a mail app's list.
+final _spaces = RegExp(r'\s+');
+
 class MailTile extends StatelessWidget {
   const MailTile(
     this.mail, {
@@ -507,7 +500,12 @@ class MailTile extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    mail.body.replaceAll(RegExp(r'\s+'), ' '),
+                    // Two lines show at most a few hundred characters; tidying the
+                    // whole body on every rebuild made long lists stutter.
+                    (mail.body.length > 300
+                            ? mail.body.substring(0, 300)
+                            : mail.body)
+                        .replaceAll(_spaces, ' '),
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
