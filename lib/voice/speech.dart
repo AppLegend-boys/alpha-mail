@@ -492,6 +492,15 @@ class Recognizer extends ChangeNotifier with SafeNotifier {
           numChannels: 1,
           echoCancel: echoCancel,
           noiseSuppress: echoCancel,
+          // Android's echo canceller only hears what plays in a call; in
+          // normal mode the phone's own reading isn't taken out at all.
+          androidConfig: echoCancel
+              ? const AndroidRecordConfig(
+                  audioSource: AndroidAudioSource.voiceCommunication,
+                  audioManagerMode: AudioManagerMode.modeInCommunication,
+                  speakerphone: true,
+                )
+              : const AndroidRecordConfig(),
         ),
       );
       listening = true;
