@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../mail/mail.dart';
 import '../mail/mail_account.dart';
+import '../voice/commands.dart';
 import '../voice/speech.dart';
 import '../voice/tts.dart';
 import '../widgets.dart';
@@ -133,8 +134,7 @@ class _ComposeScreenState extends State<ComposeScreen> {
   late final _subject = TextEditingController(
     text: switch (widget.mail?.subject) {
       null => '',
-      final s when s.toLowerCase().startsWith('re:') => s,
-      final s => 'Re: $s',
+      final s => replySubject(s),
     },
   );
   late final _body = TextEditingController(text: widget.mail?.draft);
