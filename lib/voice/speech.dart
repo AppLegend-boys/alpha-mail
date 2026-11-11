@@ -344,6 +344,10 @@ class Recognizer extends ChangeNotifier with SafeNotifier {
                 decoder: '$dir/decoder.int8.onnx',
                 tokenizer: '$dir/tokenizer',
                 maxNewTokens: 256,
+                // The words the voice home acts on, so "읽어 줘" isn't
+                // taken down as "이거줘".
+                hotwords: '읽어 줘,그만,다음,보내,취소,다시,답장,나중에,'
+                    '네이버,지메일,아웃룩,처음부터,오늘',
               ),
               tokens: '', // Qwen3 reads its vocab from tokenizer/.
               numThreads: threads,

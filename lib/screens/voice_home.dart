@@ -7,6 +7,7 @@ import '../mail/mail.dart';
 import '../mail/mail_account.dart';
 import '../mail/mail_inbox.dart';
 import '../mail/summary.dart';
+import '../voice/commands.dart';
 import '../voice/model_downloads.dart';
 import '../voice/speech.dart';
 import '../voice/tts.dart';
@@ -15,7 +16,20 @@ import 'help.dart';
 import 'mail_view.dart';
 
 /// What the voice home is doing; everything but [idle] is the chat (B).
-enum VoiceStep { idle, asking, listening, reading, waiting, done, failed }
+enum VoiceStep {
+  idle,
+  asking,
+  listening,
+  reading,
+  waiting,
+  done,
+  failed,
+  // A spoken reply: what to say, Gemma writing it, "보낼까요?", sending.
+  dictating,
+  drafting,
+  confirming,
+  sending,
+}
 
 /// The pill's two lines. [again] is listening after a miss, [checking]
 /// while the last words are still being written down.
@@ -32,14 +46,18 @@ enum VoiceStep { idle, asking, listening, reading, waiting, done, failed }
         VoiceStep.asking => ('물어보는 중', '잠시 들어 주세요'),
         VoiceStep.listening when checking => ('확인하고 있어요', '잠시만요'),
         VoiceStep.listening when again => ('다시 듣고 있어요', '조용한 곳에서 조금 크게'),
-        VoiceStep.listening => ('듣고 있어요', '“어, 해줘” 또는 “나중에”'),
+        VoiceStep.listening => ('듣고 있어요', '“지메일부터 읽어 줘”처럼'),
         VoiceStep.reading => (
           '${index + 1}번째 메일 읽는 중',
           mail == null ? '“다음” 하면 넘겨요' : '${mail.from}, ${mail.subject}',
         ),
+        VoiceStep.dictating => ('듣고 있어요', '말을 마치면 잠깐 기다려 주세요'),
+        VoiceStep.drafting => ('답장 쓰는 중', '잠시만요'),
+        VoiceStep.confirming => ('보낼까요?', '“보내”, “다시”, “취소”'),
+        VoiceStep.sending => ('보내는 중', '잠시만요'),
         VoiceStep.done => ('다 읽었어요', '눌러서 다시 말하기'),
         VoiceStep.failed => ('연결을 기다려요', '눌러서 다시 시도'),
-        VoiceStep.waiting || VoiceStep.idle => ('눌러서 말하기', '“어, 해줘” 또는 “나중에”'),
+        VoiceStep.waiting || VoiceStep.idle => ('눌러서 말하기', '“지메일부터 읽어 줘”처럼'),
       };
 
 /// 음성 모드 home: one big mic (A). Tapping it turns this screen into a
@@ -109,6 +127,33 @@ class _VoiceHomeState extends State<VoiceHome> {
   List<Mail> _mails = const [];
   int _index = 0;
 
+  /// Every unread mail when this conversation first started reading, for
+  /// "처음부터" after some were read and left the inbox's list.
+  List<Mail> _all = const [];
+
+  // shortcut: Gemma sees only this many mails, which keeps its wait near a
+  // second; raise it if people with full inboxes ask for older ones.
+  static const _listMax = 30;
+
+  /// Gemma's summary model is downloaded, so it judges what was said;
+  /// without it only the fixed words work. Checked each time the mic asks.
+  bool _gemma = false;
+
+  /// Waiting on Gemma's reading of what was said.
+  bool _thinking = false;
+
+  /// Bumped when the conversation ends, so Gemma's answer about an earlier
+  /// one is dropped. Not [_run]: that moves on with every mail read.
+  int _talk = 0;
+
+  /// The mail being answered, and Gemma's reply to it.
+  Mail? _replyTo;
+  String _draftText = '';
+
+  /// The latest sentence sent to Gemma; older answers still queued are
+  /// dropped.
+  int _thought = 0;
+
   /// Bumped by every new step, pause and reset, so an older step still
   /// waiting on speech or the network stops there.
   int _run = 0;
@@ -163,12 +208,15 @@ class _VoiceHomeState extends State<VoiceHome> {
   /// Back to the big mic.
   void _reset() {
     _run++;
+    _talk++;
+    _all = const [];
     _reader.stop();
     _stopMic();
     setState(() {
       _step = VoiceStep.idle;
       _paused = false;
       _misses = 0;
+      _thinking = false;
       _lines.clear();
     });
   }
@@ -193,6 +241,8 @@ class _VoiceHomeState extends State<VoiceHome> {
       }
       return;
     }
+    _gemma = await Summarizer.instance.installed;
+    if (!mounted || run != _run) return;
     final question = '안 읽은 메일이 ${widget.unread}건 있어요. 읽어드릴까요?';
     setState(() {
       _paused = false;
@@ -222,41 +272,135 @@ class _VoiceHomeState extends State<VoiceHome> {
     _waitForWords(const Duration(seconds: 8));
   }
 
-  void _waitForWords(Duration wait) {
+  void _waitForWords(Duration wait) => _onQuiet(
+    wait,
+    VoiceStep.listening,
+    () => _s.heard.isNotEmpty
+        ? _waitForWords(const Duration(seconds: 3))
+        : _missed(heard: false),
+  );
+
+  /// Calls [then] once nothing has been said for [wait] in [step]. Still
+  /// talking, or still being written down: gives it [more].
+  void _onQuiet(
+    Duration wait,
+    VoiceStep step,
+    VoidCallback then, {
+    Duration more = const Duration(seconds: 3),
+  }) {
     _silence?.cancel();
     _silence = Timer(wait, () {
-      if (!mounted || _step != VoiceStep.listening || _paused) return;
-      // Still talking, or still being written down: give it a moment more.
-      if (_s.hearing || _s.partial.isNotEmpty || _s.heard.isNotEmpty) {
-        return _waitForWords(const Duration(seconds: 3));
+      if (!mounted || _step != step || _paused) return;
+      if (_s.hearing || _s.partial.isNotEmpty) {
+        return _onQuiet(more, step, then, more: more);
       }
-      _missed(heard: false);
+      then();
     });
   }
 
   void _onSpeech() {
     final said = _s.heard.trim();
-    if (said.isEmpty) return;
+    if (said.isEmpty) {
+      // Still being written down: the reply isn't over yet.
+      if (_step == VoiceStep.dictating) _waitForReply(_replyPause);
+      return;
+    }
+    if (_step == VoiceStep.dictating) {
+      if (quickCommand(said) == Quick.stop) return _quit();
+      // Sentences add up in [heard] until a pause ends the reply.
+      return _waitForReply(_replyPause);
+    }
+    if (_step == VoiceStep.confirming) {
+      if (!_s.listening || _paused) return;
+      setState(() => _say(said, mine: true));
+      switch (quickCommand(said, confirming: true)) {
+        case Quick.send:
+          _sendReply();
+        case Quick.cancel:
+          _cancelReply();
+        case Quick.again:
+          _startReply();
+        case Quick.stop:
+          _quit();
+        case _:
+          _draft(said, previous: _draftText);
+      }
+      return;
+    }
     if (_step == VoiceStep.reading) {
       // shortcut: each sentence is judged alone and then dropped; good enough
       // for one-word commands, not for longer ones.
       _s.clear();
-      if (isSkipCommand(said)) {
-        _reader.stop();
-        _next();
-      } else if (isLaterCommand(said)) {
-        _quit();
+      switch (quickCommand(said)) {
+        case Quick.stop:
+          _quit();
+        case Quick.next:
+          _reader.stop();
+          _next();
+        case _:
+          // Talking over the mail without the model: nothing to judge it.
+          if (_gemma) _think(said, reading: true);
       }
       return;
     }
-    if (_step != VoiceStep.listening || _paused) return;
+    if (_step != VoiceStep.listening || _paused || _thinking) return;
     setState(() => _say(said, mine: true));
-    if (isLaterCommand(said)) {
-      _quit();
-    } else if (isYesCommand(said)) {
-      _startReading();
+    if (quickCommand(said) == Quick.stop) return _quit();
+    if (_gemma) {
+      _think(said, reading: false);
     } else {
-      _missed(heard: true);
+      // Without the model the question is only "읽어드릴까요?".
+      isLaterCommand(said) ? _quit() : _startReading();
+    }
+  }
+
+  /// Asks Gemma what [said] wants and does it. While [reading] the mail
+  /// goes on meanwhile, and anything it doesn't take is let go.
+  Future<void> _think(String said, {required bool reading}) async {
+    final talk = _talk;
+    final thought = ++_thought;
+    // Set before the mic stops: the same sentence comes in twice (heard,
+    // then partial cleared) and must be judged once.
+    setState(() => _thinking = true);
+    if (!reading) await _stopMic();
+    if (!mounted) return;
+    VoiceIntent? intent;
+    // Unread first, then the ones read in this talk, for "처음부터".
+    final unread = widget.inbox.mails.take(_listMax).toList();
+    final listed = [
+      ...unread,
+      ..._all.where((m) => !unread.contains(m)),
+    ].take(_listMax).toList();
+    try {
+      intent = parseIntent(
+        await Summarizer.instance.complete(
+          intentPrompt(
+            said,
+            mails: listed,
+            unread: unread.length,
+            reading: reading,
+            now: DateTime.now(),
+          ),
+        ),
+      );
+    } catch (e) {
+      debugPrint('Gemma could not judge "$said": $e');
+    }
+    if (!mounted || talk != _talk || thought != _thought) return;
+    setState(() => _thinking = false);
+    if (_paused) return;
+    switch (intent?.action) {
+      case IntentAction.later:
+        _quit();
+      case IntentAction.read:
+        _startReading(switch (intent!.mails) {
+          final picked? => pickMails(listed, picked),
+          null => null,
+        });
+      case IntentAction.reply:
+        if (reading) _startReply(content: intent!.content);
+      case IntentAction.none || null:
+        if (!reading) _missed(heard: true);
     }
   }
 
@@ -265,7 +409,11 @@ class _VoiceHomeState extends State<VoiceHome> {
   Future<void> _missed({required bool heard}) async {
     final run = ++_run;
     final again = ++_misses < 2;
-    final reply = again ? '“어, 해줘” 또는 “나중에”라고 말씀해 주세요.' : '아래 버튼으로 골라 주세요.';
+    final reply = !again
+        ? '아래 버튼으로 골라 주세요.'
+        : _gemma
+        ? '“메일 읽어 줘”, “네이버만”처럼 말씀해 주세요.'
+        : '“어, 해줘” 또는 “나중에”라고 말씀해 주세요.';
     setState(() {
       _step = again ? VoiceStep.asking : VoiceStep.waiting;
       if (!heard) _say('잘 들리지 않았어요', mine: true, miss: true);
@@ -283,11 +431,30 @@ class _VoiceHomeState extends State<VoiceHome> {
     _reader.speak('알겠어요. 필요하면 다시 불러 주세요.');
   }
 
-  void _startReading() {
-    _mails = List.of(widget.inbox.mails);
+  /// Reads the unread mail, or the ones Gemma [picked].
+  void _startReading([List<Mail>? picked]) {
+    if (_all.isEmpty) _all = List.of(widget.inbox.mails);
+    final mails = picked ?? List.of(widget.inbox.mails);
+    if (mails.isEmpty) {
+      _nothing(reading: _step == VoiceStep.reading);
+      return;
+    }
+    _mails = mails;
     _index = 0;
     _misses = 0;
     _readMail();
+  }
+
+  /// Nothing matched what was asked: says so, then goes back to the mail
+  /// being read, or listens again.
+  Future<void> _nothing({required bool reading}) async {
+    final run = ++_run;
+    const text = '말씀하신 메일이 없어요.';
+    setState(() => _say(text));
+    await _stopMic();
+    await _reader.speak(text);
+    if (!mounted || run != _run) return;
+    reading ? _readMail() : _listen(run);
   }
 
   /// Reads who and what, then the summary once it's written (the whole
@@ -370,7 +537,12 @@ class _VoiceHomeState extends State<VoiceHome> {
     _stopMic();
   }
 
-  void _resume() => _step == VoiceStep.reading ? _readMail() : _ask();
+  void _resume() => switch (_step) {
+    VoiceStep.reading => _readMail(),
+    VoiceStep.dictating => _startReply(),
+    VoiceStep.confirming => _readDraft(),
+    _ => _ask(),
+  };
 
   void _tapMic() {
     if (_s.loaded) {
@@ -391,6 +563,8 @@ class _VoiceHomeState extends State<VoiceHome> {
       case VoiceStep.waiting:
         _misses = 0;
         _listen(++_run);
+      case VoiceStep.drafting || VoiceStep.sending:
+        break;
       case _:
         _paused ? _resume() : _pause();
     }
@@ -406,6 +580,154 @@ class _VoiceHomeState extends State<VoiceHome> {
   Future<void> _reply() async {
     _pause();
     widget.onReply(_mails[_index]);
+  }
+
+  /// The quiet that ends a spoken reply; [Recognizer] already cuts a
+  /// sentence at 0.6 s, so pauses inside the reply stay in it.
+  static const _replyPause = Duration(seconds: 2);
+
+  /// "답장해 줘" for the mail being read, with what to say if it came
+  /// along ("괜찮다고 보내자"). Only with Gemma, which writes it.
+  Future<void> _startReply({String? content}) async {
+    final run = ++_run;
+    final mail = _mails[_index];
+    setState(() {
+      _paused = false;
+      _step = VoiceStep.asking;
+    });
+    _reader.stop();
+    await _stopMic();
+    if (!mounted || run != _run) return;
+    if (mail.account == null || mail.address.isEmpty) {
+      return _sayThenNext('예시 메일에는 답장할 수 없어요.', run);
+    }
+    _replyTo = mail;
+    _misses = 0;
+    if (content != null) return _draft(content);
+    await _askReply(run, '뭐라고 보낼까요?');
+  }
+
+  Future<void> _askReply(int run, String question) async {
+    setState(() => _say(question));
+    await _reader.speak(question);
+    if (!mounted || run != _run) return;
+    await _s.toggleListening();
+    if (!mounted || run != _run || !_s.listening) return;
+    setState(() => _step = VoiceStep.dictating);
+    _waitForReply(const Duration(seconds: 8));
+  }
+
+  void _waitForReply(Duration wait) => _onQuiet(wait, VoiceStep.dictating, () {
+    final said = _s.heard.trim();
+    if (said.isNotEmpty) {
+      _draft(said);
+    } else if (++_misses < 2) {
+      final run = ++_run;
+      _stopMic().then((_) => _askReply(run, '잘 들리지 않았어요. 뭐라고 보낼까요?'));
+    } else {
+      _sayThenNext('답장은 그만둘게요.', ++_run);
+    }
+  }, more: _replyPause);
+
+  /// Gemma writes the reply from [said], or changes [previous] the way
+  /// [said] asks, then reads it back.
+  Future<void> _draft(String said, {String? previous}) async {
+    final run = ++_run;
+    setState(() {
+      _step = VoiceStep.drafting;
+      if (previous == null) _say(said, mine: true);
+    });
+    await _stopMic();
+    var text = '';
+    try {
+      text = await Summarizer.instance.complete(
+        replyPrompt(_replyTo!, said, draft: previous),
+      );
+    } catch (e) {
+      debugPrint('Gemma could not write the reply: $e');
+    }
+    if (!mounted || run != _run) return;
+    if (text.isEmpty) {
+      _misses = 0;
+      return _askReply(run, '답장을 쓰지 못했어요. 다시 말씀해 주세요.');
+    }
+    _draftText = text;
+    setState(() => _say(text));
+    _readDraft();
+  }
+
+  /// Reads the draft with the mic off, so its own "보내" can't send it,
+  /// then listens for 보내·다시·취소 or a change.
+  Future<void> _readDraft() async {
+    final run = ++_run;
+    setState(() {
+      _paused = false;
+      _step = VoiceStep.confirming;
+    });
+    await _stopMic();
+    final problem = await _reader.speak('이렇게 보낼게요.\n$_draftText\n보낼까요?');
+    if (!mounted || run != _run) return;
+    if (problem != null && problem != Reader.cut) showProblem(context, problem);
+    _misses = 0;
+    await _listenConfirm(run);
+  }
+
+  Future<void> _listenConfirm(int run) async {
+    await _s.toggleListening();
+    if (!mounted || run != _run || !_s.listening) return;
+    _onQuiet(const Duration(seconds: 8), VoiceStep.confirming, () async {
+      final run = ++_run;
+      await _stopMic();
+      // Twice unanswered: the buttons stay for later.
+      if (++_misses >= 2) return;
+      const again = '“보내”, “다시”, “취소” 중에 말씀해 주세요.';
+      setState(() => _say(again));
+      await _reader.speak(again);
+      if (!mounted || run != _run) return;
+      await _listenConfirm(run);
+    });
+  }
+
+  /// Only on a bare "보내" or the button.
+  Future<void> _sendReply() async {
+    final run = ++_run;
+    final mail = _replyTo!;
+    final account = mail.account!;
+    setState(() => _step = VoiceStep.sending);
+    await _stopMic();
+    try {
+      await account.send(
+        to: mail.address,
+        subject: replySubject(mail.subject),
+        text: _draftText,
+        replyTo: mail,
+      );
+    } catch (e) {
+      debugPrint('Voice reply failed: $e');
+      if (!mounted || run != _run) return;
+      final problem = '보내지 못했어요. ${mailError(account.service, e)}';
+      setState(() {
+        _step = VoiceStep.confirming;
+        _say(problem);
+      });
+      await _reader.speak('${withoutCode(problem)}\n다시 보낼까요?');
+      if (!mounted || run != _run) return;
+      _misses = 0;
+      return _listenConfirm(run);
+    }
+    if (!mounted || run != _run) return;
+    _sayThenNext('보냈어요.', run);
+  }
+
+  void _cancelReply() => _sayThenNext('안 보냈어요.', ++_run);
+
+  /// Says [text], then reads on from the next mail.
+  Future<void> _sayThenNext(String text, int run) async {
+    setState(() => _say(text));
+    await _stopMic();
+    await _reader.speak(text);
+    if (!mounted || run != _run) return;
+    _next();
   }
 
   @override
@@ -453,7 +775,7 @@ class _VoiceHomeState extends State<VoiceHome> {
       _step,
       paused: _paused,
       again: _misses > 0,
-      checking: _s.partial == '…',
+      checking: _s.partial == '…' || _thinking,
       index: _index,
       mail: _step == VoiceStep.reading ? _mails[_index] : null,
     );
@@ -500,7 +822,7 @@ class _VoiceHomeState extends State<VoiceHome> {
     );
     final chips = switch (_step) {
       VoiceStep.reading when !_paused => [
-        chip('답장할래', _reply),
+        chip('답장할래', _gemma ? _startReply : _reply),
         chip('다음 메일', () {
           _reader.stop();
           _next();
@@ -508,6 +830,11 @@ class _VoiceHomeState extends State<VoiceHome> {
         chip('그만', _quit),
       ],
       VoiceStep.waiting => [chip('읽어 줘', _startReading), chip('나중에', _quit)],
+      VoiceStep.confirming when !_paused => [
+        chip('보내기', _sendReply),
+        chip('다시', _startReply),
+        chip('취소', _cancelReply),
+      ],
       VoiceStep.done => [chip('처음 화면으로', _reset)],
       VoiceStep.failed => [chip('다시 시도', _retry)],
       _ => const <Widget>[],

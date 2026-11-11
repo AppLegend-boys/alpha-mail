@@ -1,7 +1,6 @@
 import 'dart:convert';
 
 import '../mail/mail.dart';
-import '../mail/mail_account.dart';
 import '../screens/mail_view.dart' show isSkipCommand;
 
 /// The few words the voice home takes on its own, without asking Gemma:
@@ -29,24 +28,13 @@ RegExp _bare(String word) =>
 enum IntentAction { read, later, reply, none }
 
 class VoiceIntent {
-  const VoiceIntent({
-    required this.action,
-    this.service,
-    this.only = false,
-    this.fromStart = false,
-    this.today = false,
-    this.content,
-  });
+  const VoiceIntent({required this.action, this.mails, this.content});
 
   final IntentAction action;
 
-  /// The account named, if any.
-  final MailService? service;
-
-  /// Only [service]'s mail; otherwise it goes first and the rest follow.
-  final bool only;
-  final bool fromStart;
-  final bool today;
+  /// The listed mails to read, by number, in Gemma's order; null reads
+  /// the unread ones as they come.
+  final List<int>? mails;
 
   /// What to say in a reply, when it came with the request.
   final String? content;
@@ -62,13 +50,11 @@ VoiceIntent? parseIntent(String output) {
     if (json is! Map) return null;
     final action = IntentAction.values.asNameMap()[json['action']];
     if (action == null) return null;
+    final mails = json['mails'];
     final content = json['content'];
     return VoiceIntent(
       action: action,
-      service: MailService.values.asNameMap()[json['service']],
-      only: json['only'] == true,
-      fromStart: json['from_start'] == true,
-      today: json['today'] == true,
+      mails: mails is List ? mails.whereType<int>().toList() : null,
       content: content is String && content.trim().isNotEmpty
           ? content.trim()
           : null,
@@ -78,48 +64,72 @@ VoiceIntent? parseIntent(String output) {
   }
 }
 
-/// The mails to read for [intent], keeping their order otherwise.
-List<Mail> pickMails(
-  List<Mail> mails,
-  VoiceIntent intent, {
-  required DateTime now,
-}) {
-  final day = [
-    for (final m in mails)
-      if (!intent.today || _sameDay(m.date?.toLocal(), now)) m,
-  ];
-  final service = intent.service;
-  if (service == null) return day;
-  final named = [
-    for (final m in day)
-      if (m.account?.service == service) m,
-  ];
-  if (intent.only) return named;
-  return [...named, ...day.where((m) => !named.contains(m))];
-}
+/// The [listed] mails Gemma [picked], skipping numbers that aren't there.
+List<Mail> pickMails(List<Mail> listed, List<int> picked) => [
+  for (final i in {...picked})
+    if (i >= 0 && i < listed.length) listed[i],
+];
 
-bool _sameDay(DateTime? a, DateTime b) =>
-    a != null && a.year == b.year && a.month == b.month && a.day == b.day;
-
+/// Gemma reads [mails] itself and picks by number, so "네이버만",
+/// "오늘 온 거" or "민지 메일" need no rule each. The first [unread] are
+/// unread; the rest were read in this conversation.
 String intentPrompt(
   String said, {
-  required List<MailService> services,
+  required List<Mail> mails,
+  required int unread,
   required bool reading,
-}) =>
-    '메일을 소리로 읽어 주는 앱이에요. 사용자가 말한 문장을 보고 '
-    '아래 JSON 하나로만 답해 주세요. 설명은 쓰지 마세요.\n'
-    '{"action": "read|later|reply|none", '
-    '"service": "${MailService.values.map((s) => s.name).join('|')}|null", '
-    '"only": true|false, "from_start": true|false, "today": true|false, '
-    '"content": "답장 내용 또는 null"}\n'
-    '- read: 메일을 읽어 달라는 말. 특정 계정만이면 service와 only:true, '
-    '그 계정부터면 only:false, 처음부터면 from_start:true, 오늘 온 것만이면 today:true\n'
-    '- later: 나중에, 끝내자는 말\n'
-    '- reply: 지금 메일에 답장하자는 말. 보낼 내용도 말했으면 content에\n'
-    '- none: 앱에게 하는 말이 아님 (다른 사람과의 대화, 앱이 읽어 준 메일 문장)\n'
-    '연결된 계정: ${services.map((s) => '${s.name}(${s.label})').join(', ')}\n'
-    '지금 상태: ${reading ? '메일을 읽어 주는 중' : '읽어 드릴지 묻는 중'}\n'
-    '사용자: $said';
+  required DateTime now,
+}) {
+  String day(DateTime? d) => d == null
+      ? ''
+      : _sameDay(d, now)
+      ? '오늘'
+      : _sameDay(d, now.subtract(const Duration(days: 1)))
+      ? '어제'
+      : '${d.month}월 ${d.day}일';
+  final list = [
+    for (final (i, m) in mails.indexed)
+      [
+        '$i. ${m.account?.service.label ?? ''}',
+        m.from,
+        m.subject,
+        day(m.date?.toLocal()),
+        if (i >= unread) '이미 읽음',
+      ].join(' · '),
+  ].join('\n');
+  // Examples, not a "true|false" template: given one, Gemma filled every
+  // key and "네이버만" came back as only today's mail.
+  return '메일을 소리로 읽어 주는 앱이에요. 사용자가 한 말을 아래 예시처럼 JSON 한 줄로만 '
+      '바꿔 주세요. 설명은 쓰지 마세요.\n'
+      '사용자의 말은 음성인식으로 받아 적은 것이라 소리가 비슷한 다른 말로 '
+      '잘못 적혀 있을 수 있어요. 예를 들어 "이거줘"는 "읽어 줘", '
+      '"네이버 메 말"은 "네이버 메일"일 수 있으니 소리를 떠올려 뜻을 짐작하세요.\n\n'
+      '예시 메일 목록:\n'
+      '0. 네이버 메일 · 김민지 · 회의 일정 · 어제\n'
+      '1. Gmail · 쿠팡 · 배송 안내 · 오늘\n'
+      '2. 네이버 메일 · 박서준 · 견적서 · 오늘 · 이미 읽음\n'
+      '예시:\n'
+      '"응 읽어 줘" → {"action":"read"}\n'
+      '"네이버 메일만 읽어 줘" → {"action":"read","mails":[0]}\n'
+      '"지메일로 바꿔 줘" → {"action":"read","mails":[1]}\n'
+      '"지메일부터 읽어 줘" → {"action":"read","mails":[1,0]}\n'
+      '"오늘 온 거 읽어 줘" → {"action":"read","mails":[1]}\n'
+      '"처음부터 다시" → {"action":"read","mails":[0,1,2]}\n'
+      '"박서준 메일 읽어 줘" → {"action":"read","mails":[2]}\n'
+      '"아웃룩 메일 읽어 줘" → {"action":"read","mails":[]}\n'
+      '"나중에 할게" → {"action":"later"}\n'
+      '"답장해 줘" → {"action":"reply"}\n'
+      '"괜찮다고 보내자" → {"action":"reply","content":"괜찮다"}\n'
+      '앱에게 하는 말이 아니면(다른 사람과의 대화, 앱이 읽어 준 메일 문장) '
+      '→ {"action":"none"}\n'
+      '이미 읽은 메일은 사용자가 처음부터, 다시, 또는 그 메일을 콕 집어 말할 때만 고르세요.\n\n'
+      '지금 메일 목록:\n$list\n'
+      '지금 상태: ${reading ? '메일을 읽어 주는 중' : '읽어 드릴지 묻는 중'}\n'
+      '사용자: "$said" →';
+}
+
+bool _sameDay(DateTime a, DateTime b) =>
+    a.year == b.year && a.month == b.month && a.day == b.day;
 
 /// Asks Gemma for the reply text to [mail] from what the user [said], or
 /// for [draft] changed the way they asked.

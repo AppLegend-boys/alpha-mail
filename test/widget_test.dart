@@ -234,6 +234,13 @@ void main() {
     expect(pillText(VoiceStep.reading, paused: true), ('멈췄어요', '눌러서 이어 듣기'));
   });
 
+  test('voice pill follows the spoken reply', () {
+    expect(pillText(VoiceStep.dictating).$1, '듣고 있어요');
+    expect(pillText(VoiceStep.drafting).$1, '답장 쓰는 중');
+    expect(pillText(VoiceStep.confirming), ('보낼까요?', '“보내”, “다시”, “취소”'));
+    expect(pillText(VoiceStep.sending).$1, '보내는 중');
+  });
+
   test('voice answers: a bare 어 is yes, chatter around it is not', () {
     expect(isYesCommand('어, 해줘'), isTrue);
     expect(isYesCommand('어'), isTrue);
