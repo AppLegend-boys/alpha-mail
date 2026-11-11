@@ -7,5 +7,6 @@ export 'screens/home.dart';
 export 'screens/mail_list.dart';
 export 'screens/mail_view.dart';
 export 'screens/settings.dart';
+export 'screens/voice_home.dart';
 export 'screens/voice_settings.dart';
 export 'widgets.dart';

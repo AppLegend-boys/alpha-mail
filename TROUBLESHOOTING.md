@@ -4,6 +4,13 @@
 
 ---
 
+## 음성 모드에서 메일을 읽는 중 “그만”·“다음”이 안 먹힘
+
+- **날짜:** 2026-11-07
+- **문제:** 낭독 중에 말해도 반응이 없음. 로그를 보면 음성 감지가 14~17초짜리 덩어리를 넘기고, 받아쓴 글자는 폰이 읽은 문장 그대로였어요.
+- **원인:** `echoCancel: true`만으로는 안드로이드 에코 제거가 통화로 나오는 소리만 기준으로 삼아요. TTS는 미디어로 나와서 전혀 걸러지지 않았고, 폰 목소리가 사용자 말을 덮었어요 (갤럭시 SM S948N, API 37).
+- **해결:** `lib/voice/speech.dart`의 `toggleListening`: 에코 제거로 들을 때 `AndroidRecordConfig(audioSource: voiceCommunication, audioManagerMode: modeInCommunication, speakerphone: true)`. 새어 드는 조각이 0.4~3초로 줄고 “그만”을 알아들어요. 완벽하진 않아서 짧은 낭독 조각은 여전히 들어올 수 있어요.
+
 ## Gmail·Outlook을 같이 연결하면 한쪽(또는 둘 다)이 로그인 실패
 
 - **날짜:** 2026-11-02

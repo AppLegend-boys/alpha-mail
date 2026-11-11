@@ -22,6 +22,17 @@ final _skip = RegExp(
   r'^\s*(다음|다음 거|다음 꺼|다음 메일|넘겨|넘어가|건너뛰어)\s*(줘|요)?\s*[.!?]?\s*$',
 );
 
+// ponytail: keyword match, not intent parsing; enough for "어, 해줘" /
+// "나중에" until a real assistant backend answers.
+// A bare "응"/"네" only counts as the whole answer; inside other words it
+// fired on background chatter.
+bool isYesCommand(String said) => _yes.hasMatch(said);
+final _yes = RegExp(r'읽어|읊어|해줘|해 줘|그래|좋아|^\s*(응|네|예|어)\s*[.!?]?\s*$');
+
+/// "나중에", "그만" or "취소".
+bool isLaterCommand(String said) => _later.hasMatch(said);
+final _later = RegExp(r'나중|그만|취소');
+
 class BriefingScreen extends StatefulWidget {
   const BriefingScreen({
     super.key,

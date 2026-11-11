@@ -272,6 +272,9 @@ class Recognizer extends ChangeNotifier with SafeNotifier {
 
   static const missed = '잘 듣지 못했어요. 다시 말씀해 주세요.';
 
+  /// [status] when the phone won't give the app the mic.
+  static const noMic = '설정에서 마이크 권한을 허용해 주세요';
+
   /// Starts on the first model already on the phone.
   Future<void> start() async {
     try {
@@ -341,6 +344,10 @@ class Recognizer extends ChangeNotifier with SafeNotifier {
                 decoder: '$dir/decoder.int8.onnx',
                 tokenizer: '$dir/tokenizer',
                 maxNewTokens: 256,
+                // The words the voice home acts on, so "읽어 줘" isn't
+                // taken down as "이거줘".
+                hotwords: '읽어 줘,그만,다음,보내,취소,다시,답장,나중에,'
+                    '네이버,지메일,아웃룩,처음부터,오늘',
               ),
               tokens: '', // Qwen3 reads its vocab from tokenizer/.
               numThreads: threads,
@@ -479,7 +486,7 @@ class Recognizer extends ChangeNotifier with SafeNotifier {
     try {
       if (!await _recorder.hasPermission()) {
         error = true;
-        status = '설정에서 마이크 권한을 허용해 주세요';
+        status = noMic;
         return notifyListeners();
       }
       final audio = await _recorder.startStream(
@@ -489,6 +496,15 @@ class Recognizer extends ChangeNotifier with SafeNotifier {
           numChannels: 1,
           echoCancel: echoCancel,
           noiseSuppress: echoCancel,
+          // Android's echo canceller only hears what plays in a call; in
+          // normal mode the phone's own reading isn't taken out at all.
+          androidConfig: echoCancel
+              ? const AndroidRecordConfig(
+                  audioSource: AndroidAudioSource.voiceCommunication,
+                  audioManagerMode: AudioManagerMode.modeInCommunication,
+                  speakerphone: true,
+                )
+              : const AndroidRecordConfig(),
         ),
       );
       listening = true;

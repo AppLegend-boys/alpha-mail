@@ -196,6 +196,31 @@ class Summarizer {
     }
   }
 
+  /// Gemma's whole answer to [prompt], for voice commands and replies.
+  /// Waits its turn behind a summary: reading only starts once the
+  /// summary is written, so while the user talks over it the model is free.
+  Future<String> complete(String prompt) async {
+    final prior = _lock;
+    final release = Completer<void>();
+    _lock = release.future;
+    await prior;
+    try {
+      final chat = await (_chat ??= _open().catchError((Object e) {
+        _chat = null;
+        throw e;
+      }));
+      await chat.clearHistory();
+      await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
+      final text = StringBuffer();
+      await for (final response in chat.generateChatResponseAsync()) {
+        if (response is TextResponse) text.write(response.token);
+      }
+      return text.toString().trim();
+    } finally {
+      release.complete();
+    }
+  }
+
   static String _prompt(Mail mail) {
     // Links mean nothing read aloud and cost tokens, so the model never sees them.
     final text = mail.body.replaceAll(RegExp(r'(https?://|www\.)\S+'), '');

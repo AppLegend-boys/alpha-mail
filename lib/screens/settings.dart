@@ -11,7 +11,11 @@ import 'help.dart';
 
 /// Choices from 앱 설정, kept in a JSON file in the app's support folder.
 class AppSettings {
-  const AppSettings({this.listSize = 20, this.checkMinutes = 0});
+  const AppSettings({
+    this.listSize = 20,
+    this.checkMinutes = 0,
+    this.screenMode = 'touch',
+  });
 
   /// Mails per account in a mail list.
   final int listSize;
@@ -19,9 +23,17 @@ class AppSettings {
   /// How often home checks for new mail; 0 is never.
   final int checkMinutes;
 
-  AppSettings copyWith({int? listSize, int? checkMinutes}) => AppSettings(
+  /// 화면 모드: 'touch' (터치 중심) or 'voice' (음성 중심).
+  final String screenMode;
+
+  AppSettings copyWith({
+    int? listSize,
+    int? checkMinutes,
+    String? screenMode,
+  }) => AppSettings(
     listSize: listSize ?? this.listSize,
     checkMinutes: checkMinutes ?? this.checkMinutes,
+    screenMode: screenMode ?? this.screenMode,
   );
 
   static Future<File> get _file async =>
@@ -34,6 +46,7 @@ class AppSettings {
       return AppSettings(
         listSize: json['listSize'] as int? ?? 20,
         checkMinutes: json['checkMinutes'] as int? ?? 0,
+        screenMode: json['screenMode'] as String? ?? 'touch',
       );
     } catch (_) {
       return const AppSettings();
@@ -41,11 +54,15 @@ class AppSettings {
   }
 
   Future<void> save() async => (await _file).writeAsString(
-    jsonEncode({'listSize': listSize, 'checkMinutes': checkMinutes}),
+    jsonEncode({
+      'listSize': listSize,
+      'checkMinutes': checkMinutes,
+      'screenMode': screenMode,
+    }),
   );
 }
 
-/// 설정: a menu of 메일 연동, 음성 설정, 알림 설정 and 도움말.
+/// 설정: a menu of 메일 연동, 화면 모드, 음성 설정, 알림 설정 and 도움말.
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
     super.key,
@@ -98,6 +115,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   : [for (final a in widget.accounts) a.address].join('\n'),
               icon: Icons.alternate_email_rounded,
               onTap: () => _open(widget.accountsScreen(trail)),
+            ),
+            MenuRow(
+              '화면 모드',
+              _settings.screenMode == 'voice'
+                  ? '말로 듣고 답하는 큰 화면'
+                  : '눌러서 확인하는 기본 화면',
+              icon: Icons.dashboard_customize_outlined,
+              trailing: _choices(_settings.screenMode, const [
+                ('touch', '터치'),
+                ('voice', '음성'),
+              ], (v) => _set(_settings.copyWith(screenMode: v))),
             ),
             MenuRow(
               '음성 설정',
@@ -186,11 +214,11 @@ class _NotificationSettingsScreenState
   );
 }
 
-Widget _choices(
-  int value,
-  List<(int, String)> options,
-  void Function(int) onPick,
-) => SegmentedButton<int>(
+Widget _choices<T>(
+  T value,
+  List<(T, String)> options,
+  void Function(T) onPick,
+) => SegmentedButton<T>(
   showSelectedIcon: false,
   segments: [
     for (final (v, label) in options)
