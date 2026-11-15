@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+import '../bluetooth.dart';
 import '../mail/mail.dart';
 import '../mail/mail_account.dart';
 import '../mail/mail_inbox.dart';
@@ -67,11 +68,27 @@ class _HomeScreenState extends State<HomeScreen> {
         _tickClock();
       });
 
+  /// 자동 실행: Bluetooth changes, coming back to the app, and the model
+  /// and mail being ready each check whether it's time to ask.
+  StreamSubscription<void>? _bluetooth;
+  AppLifecycleListener? _lifecycle;
+  bool _mailLoaded = false;
+  bool _autoChecking = false;
+
+  /// Bumped to make the voice mode home ask, like a tap on its mic.
+  int _autoAsks = 0;
+
   @override
   void initState() {
     super.initState();
     for (final state in [_speech, _downloads, _inbox]) {
       state.addListener(_rebuild);
+    }
+    if (!isDesktop) {
+      _bluetooth = Bluetooth.changes.listen((_) => _autoRun(), onError: (_) {});
+      _lifecycle = AppLifecycleListener(onResume: _autoRun);
+      _speech.addListener(_autoRun);
+      _inbox.addListener(_autoRun);
     }
     _speech.onSpeech = _checkCommand;
     _speech.addListener(_keepAwake);
@@ -84,7 +101,50 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!mounted) return;
       setState(() => _settings = settings);
       _inbox.checkEvery(settings.checkMinutes);
+      _autoRun();
     });
+  }
+
+  void _saveSettings(AppSettings settings) {
+    setState(() => _settings = settings);
+    settings.save();
+    _inbox.checkEvery(settings.checkMinutes);
+  }
+
+  /// 자동 실행: once a day, asks about the unread mail by itself when the
+  /// chosen Bluetooth device is connected and home is up and idle.
+  Future<void> _autoRun() async {
+    final settings = _settings;
+    if (!mounted ||
+        _autoChecking ||
+        !settings.autoRunDue(DateTime.now()) ||
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed ||
+        _open > 0 ||
+        !_mailLoaded ||
+        _inbox.loading ||
+        !_speech.loaded ||
+        _speech.busy ||
+        _speech.listening ||
+        _asking ||
+        Reader.instance.speaking.value) {
+      return;
+    }
+    _autoChecking = true;
+    final connected = await Bluetooth.connected();
+    _autoChecking = false;
+    if (!mounted ||
+        _settings != settings ||
+        !connected.contains(settings.autoDevice)) {
+      return;
+    }
+    _saveSettings(
+      settings.copyWith(autoRanOn: AppSettings.dayKey(DateTime.now())),
+    );
+    if (_settings.screenMode == 'voice') {
+      setState(() => _autoAsks++);
+    } else {
+      _talk();
+    }
   }
 
   void _rebuild() => setState(() {});
@@ -124,6 +184,8 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _loadMail() async {
     try {
       await _inbox.load();
+      _mailLoaded = true;
+      _autoRun();
     } catch (_) {
       // Without this the accounts just looked unlinked, as if they were lost.
       if (mounted) {
@@ -145,6 +207,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _bluetooth?.cancel();
+    _lifecycle?.dispose();
     Reader.instance.speaking.removeListener(_keepAwake);
     _sleep?.cancel();
     WakelockPlus.disable();
@@ -170,6 +234,7 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() => _section = 'home');
       _inbox.retryFailed();
     }
+    _autoRun();
   }
 
   /// A dock tap on the [section] already open goes back to its first screen
@@ -190,11 +255,7 @@ class _HomeScreenState extends State<HomeScreen> {
         from: [homeLabel],
         accounts: _inbox.accounts,
         settings: _settings,
-        onChanged: (settings) {
-          setState(() => _settings = settings);
-          settings.save();
-          _inbox.checkEvery(settings.checkMinutes);
-        },
+        onChanged: _saveSettings,
         accountsScreen: _providerScreen,
         voiceScreen: (from) {
           _downloads.refreshOnPhone();
@@ -876,6 +937,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       downloads: _downloads,
                       inbox: _inbox,
                       unread: _unreadCount,
+                      autoAsks: _autoAsks,
                       greeting: dateLine,
                       onDownload: onMic == null || _speech.loaded
                           ? null
