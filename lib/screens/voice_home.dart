@@ -70,6 +70,7 @@ class VoiceHome extends StatefulWidget {
     required this.downloads,
     required this.inbox,
     required this.unread,
+    this.autoAsks = 0,
     required this.greeting,
     required this.onDownload,
     required this.onOpenMail,
@@ -85,6 +86,9 @@ class VoiceHome extends StatefulWidget {
 
   /// Unread mail across accounts.
   final int unread;
+
+  /// Changes when 자동 실행 asks, as if the big mic was tapped.
+  final int autoAsks;
 
   /// "좋은 오후예요 · 11월 5일 목요일".
   final String greeting;
@@ -171,6 +175,12 @@ class _VoiceHomeState extends State<VoiceHome> {
     super.initState();
     _homeOnSpeech = _s.onSpeech;
     _s.onSpeech = _onSpeech;
+  }
+
+  @override
+  void didUpdateWidget(VoiceHome old) {
+    super.didUpdateWidget(old);
+    if (widget.autoAsks != old.autoAsks && _step == VoiceStep.idle) _ask();
   }
 
   @override

@@ -8,6 +8,11 @@
     <!-- Foreground download, so Android doesn't pause big model files at 9 min. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- 자동 실행: paired devices and which one is connected. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- 자동 실행: lets the closed app open itself when the device connects. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <application
         android:label="Alpha Mail"
         android:name="${applicationName}"
@@ -46,6 +51,14 @@
                 <data android:scheme="com.applegend.alphamail" android:host="oauthredirect" />
             </intent-filter>
         </activity>
+        <!-- 자동 실행 while the app is closed. ACL_CONNECTED is one of the
+             broadcasts Android still delivers to receivers in the manifest;
+             only the Bluetooth stack can send it. -->
+        <receiver android:name=".BluetoothReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="android.bluetooth.device.action.ACL_CONNECTED" />
+            </intent-filter>
+        </receiver>
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"
             android:foregroundServiceType="dataSync"
