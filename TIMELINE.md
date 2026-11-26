@@ -2,6 +2,13 @@
 
 언제 무엇을 했는지 최신순으로 남겨요. 코드 변경 상세는 `git log`와 PR을 참고하세요.
 
+## 2026-11-26 (목)
+
+- 하네스 적용: Claude Code 작업 규칙(`CLAUDE.md`), 위험 명령 차단·커밋 전 타임라인 확인 훅, `test-runner` 에이전트, PR 템플릿, `dev` 병합 시 이슈 닫기, CI(분석·테스트, Android·iOS 빌드)
+- **결정: 작업 기록은 `TIMELINE.md` 하나로 유지.** 하네스 기본은 `timeline/log.md`지만 기록이 두 곳으로 나뉘지 않게 훅이 `TIMELINE.md`를 보도록 함
+- **결정: `CLAUDE.md`와 `.claude/`는 저장소에 올리지 않음.** 공개 저장소라 AI 지침과 자동 실행 훅을 공개하지 않음. 팀 공통 규칙은 `AGENTS.md`에 둠
+- 다음 할 일: 첫 PR에서 CI 결과 확인(특히 iOS 빌드), 다른 작업 폴더에도 `.claude/` 넣기
+
 ## 2026-11-11 (수)
 
 눈을 안 보고(운전·걸으며) 쓰는 음성 흐름 보완 (11-07부터, 설계 `docs/superpowers/specs/2026-11-07-voice-flow-design.md`)

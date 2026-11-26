@@ -49,3 +49,11 @@ app.*.map.json
 
 # graphify knowledge graph (regenerable, machine-specific paths)
 graphify-out/
+
+# Secrets
+.env
+.env.*
+
+# Claude Code: AI instructions and auto-run hooks stay local (public repo)
+CLAUDE.md
+.claude/
