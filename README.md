@@ -1,27 +1,54 @@
 # Alpha Mail
 
-Android·iOS용 완전 로컬 한국어 음성인식 MVP입니다. 마이크 음성은 sherpa-onnx 엔진과 SenseVoice 또는 Qwen3-ASR 모델로 기기 안에서 처리합니다. 앱에는 네트워크 권한을 추가하지 않았고, 음성 서버나 API 키를 사용하지 않습니다.
+여러 메일 계정을 한곳에 모아 보고, 말로 듣고 답하는 Android·iOS 앱입니다.
+음성인식, 요약, 답장 쓰기, 낭독은 모두 폰 안에서 처리합니다. 메일 내용과 음성은 외부 AI 서버로 보내지 않고, 앱이 통신하는 곳은 메일 서버(IMAP·SMTP)와 로그인(OAuth)뿐입니다.
 
-## 실행
+## 주요 기능
 
-Flutter SDK와 Android SDK를 설치한 뒤 USB 디버깅을 켠 Android 휴대폰을 연결합니다.
-
-```sh
-flutter pub get
-flutter run
-```
-
-미리 빌드한 Android 설치 파일은 `build/app/outputs/flutter-apk/`에 있습니다. 보통 Android 휴대폰은 `app-arm64-v8a-release.apk`를 설치하면 됩니다. 구형 32비트 Android는 `app-armeabi-v7a-release.apk`, x86_64 기기는 `app-x86_64-release.apk`를 사용하세요. USB 연결 후 `adb install -r build/app/outputs/flutter-apk/app-arm64-v8a-release.apk`로 설치하거나 APK를 휴대폰에 복사해 열 수 있습니다. iPhone은 macOS의 Xcode와 서명 설정이 필요하며, 연결한 기기에서 `flutter run -d <device-id>`를 실행합니다.
+- **메일 연동**: 네이버, Gmail, Outlook (IMAP으로 받고 SMTP로 보냄. Gmail·Outlook은 OAuth 로그인)
+- **메일함**: 연결한 계정의 메일과 안 읽은 메일을 모아 보고, 주기적으로 새 메일을 확인
+- **요약**: 메일 내용을 폰 안의 Gemma가 요약
+- **화면 모드**: 터치 모드와 음성 모드 (설정 > 화면 모드)
+- **음성 모드**: 마이크를 누르고 말하면 안 읽은 메일을 읽어 줌
+  - 고정 명령 5개: 그만·멈춰 / 다음 / (확인할 때) 보내·취소·다시
+  - 그 밖의 말("네이버만 읽어 줘", "박서준 메일 읽어 줘")은 Gemma가 뜻을 판단하고 읽을 메일을 고름
+  - 말로 답장: "답장해 줘" → 내용 말하기 → Gemma가 초안 → 읽어 주고 "보낼까요?" → "보내"라고 해야 보냄
+- **자동 실행**: 고른 블루투스 기기가 연결되면 하루 한 번 "안 읽은 메일이 N건 있어요. 읽어드릴까요?"라고 물음
+  - Android: 앱이 꺼져 있어도 앱을 켬 ('다른 앱 위에 표시' 허용 필요)
+  - iOS: 앱이 스스로 켜질 수 없어서 단축어 앱 자동화(블루투스 연결 → 앱 열기)를 쓰도록 안내
 
 ## 모델
 
-- sherpa-onnx `1.13.8`
-- SenseVoice(문장 단위, 약 240MB), Qwen3-ASR 0.6B(고정확도, 약 980MB), 둘 다 INT8
-- 모델은 앱 번들에 넣지 않고, 앱에서 처음 선택할 때 HuggingFace에서 내려받습니다. 받은 뒤에는 오프라인으로 동작합니다.
-- 앱의 '음성 설정'에서 모델을 고르고, 받고, 삭제합니다.
+| 용도 | 모델 | 크기 | 엔진 |
+|---|---|---|---|
+| 요약·명령 판단·답장 쓰기 | Gemma 4 E2B (`gemma-4-E2B-it.litertlm`) | 약 2.6GB | `flutter_gemma` (LiteRT-LM, GPU) |
+| 음성인식 | SenseVoice (INT8) | 약 240MB | sherpa-onnx `1.13.8` |
+| 음성인식 (정확도 높음) | Qwen3-ASR 0.6B (INT8) | 약 980MB | sherpa-onnx `1.13.8` |
+| 말소리 감지(VAD) | Silero VAD | 앱에 포함 | sherpa-onnx |
+| 낭독 | 폰에 내장된 TTS | - | `flutter_tts` |
 
-앱 번들에는 VAD 모델(`assets/models/vad/silero_vad.onnx`)만 포함됩니다. 음성인식 모델 목록과 다운로드 주소는 `lib/main.dart`의 `SpeechModel`에 있습니다.
+- 모델은 앱에 넣지 않습니다. 처음 쓸 때 HuggingFace에서 알림을 띄운 채 내려받고, 그 뒤로는 인터넷 없이 동작합니다. 앱에 들어 있는 건 VAD(`assets/models/vad/`)뿐입니다.
+- 음성인식 모델은 '음성 설정'에서 고르고, 받고, 지웁니다. 목록과 주소는 `lib/voice/speech.dart`의 `SpeechModel`에 있습니다.
+- Gemma 모델 주소는 `lib/mail/summary.dart`에 있습니다.
+- Android TTS는 오프라인 목소리만 씁니다 (네트워크 목소리는 메일 내용을 구글로 보냄).
 
-## 현재 범위
+## 실행
 
-말하기 시작·멈추기, 한국어 실시간 문장 표시, 마이크 권한 처리까지 구현했습니다. 기기 성능에 따라 속도와 인식률이 다르므로 보급형·구형 기기까지 지원 여부를 확인하려면 실제 기기별 측정이 필요합니다. 현재는 Android APK를 빌드했으며, iOS 서명 및 실기기 설치는 아직 수행하지 않았습니다.
+```sh
+flutter pub get
+flutter run -d <device-id>
+flutter test
+flutter analyze
+flutter build apk --split-per-abi   # → build/app/outputs/flutter-apk/
+```
+
+- 보통 Android 폰에는 `app-arm64-v8a-release.apk`를 설치합니다 (`adb install -r build/app/outputs/flutter-apk/app-arm64-v8a-release.apk`).
+- iOS는 16 이상이 필요하고(`flutter_gemma` 요구 사항), Xcode에서 서명을 설정해야 합니다.
+- 데스크탑은 지원하지 않습니다 (2026-10-15에 제외).
+
+## 문서
+
+- `AGENTS.md`: 코드 구조와 꼭 지킬 규칙
+- `DESIGN.md`: 디자인 기준
+- `TIMELINE.md`: 날짜별 작업 기록과 결정
+- `TROUBLESHOOTING.md`: 겪은 문제와 해결
