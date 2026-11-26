@@ -6,11 +6,23 @@ import 'package:alpha_mail/mail/mail_account.dart';
 import 'package:alpha_mail/screens/compose.dart';
 import 'package:alpha_mail/screens/help.dart';
 import 'package:alpha_mail/screens/mail_view.dart';
+import 'package:alpha_mail/screens/settings.dart';
 import 'package:alpha_mail/screens/voice_home.dart';
 import 'package:alpha_mail/voice/tts.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('자동 실행 asks once a day, only with a device picked', () {
+    final morning = DateTime(2026, 11, 11, 8);
+    const on = AppSettings(autoRun: true, autoDevice: 'AA:BB');
+    expect(on.autoRunDue(morning), isTrue);
+    final ran = on.copyWith(autoRanOn: AppSettings.dayKey(morning));
+    expect(ran.autoRunDue(DateTime(2026, 11, 11, 23)), isFalse);
+    expect(ran.autoRunDue(DateTime(2026, 11, 12, 7)), isTrue);
+    expect(const AppSettings(autoRun: true).autoRunDue(morning), isFalse);
+    expect(on.copyWith(autoRun: false).autoRunDue(morning), isFalse);
+  });
+
   test('pcm16ToFloat32 decodes little-endian samples to [-1, 1)', () {
     // 0, +1, -1, max, min as little-endian int16 pairs.
     final bytes = Uint8List.fromList([

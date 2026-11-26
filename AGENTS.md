@@ -15,6 +15,7 @@ flutter build apk --split-per-abi   # → build/app/outputs/flutter-apk/
 - `main.dart`: 진입점, 스플래시
 - `widgets.dart`: 공통 부품 `VoiceCard`, `ScreenTitle`, `AppPage`(경로·스와이프 뒤로), `WritePill`, `StatusChip`, `ServiceBadge`(네이버·Gmail 한 글자 배지), `Brand`, `SafeNotifier`(dispose 뒤 알림 무시). 새 화면도 이걸로 만듦
 - `screens.dart`: 화면을 모두 내보내는 묶음 (`import 'screens.dart'` 하나로 다 씀)
+- `bluetooth.dart`: `Bluetooth`, 자동 실행용 블루투스 기기 목록·연결 확인 (네이티브 채널: `MainActivity.kt`, `AppDelegate.swift`)
 - `mail/`: 메일 데이터
   - `mail.dart`: `Mail`, `MailFolder`, `markRead`, 예시 메일
   - `mail_account.dart`: 네이버·Gmail·Outlook IMAP(`enough_mail`)·SMTP 발송, Gmail·Outlook OAuth(`flutter_appauth`), `flutter_secure_storage`
@@ -24,7 +25,7 @@ flutter build apk --split-per-abi   # → build/app/outputs/flutter-apk/
   - `speech.dart`: sherpa-onnx 한국어 STT. 모델 목록·URL은 `SpeechModel`, 녹음·인식·모델 불러오기·삭제는 `Recognizer`
   - `model_downloads.dart`: `ModelDownloads`, 음성 모델 다운로드·진행률·이어받기
   - `tts.dart`: `Reader`, 폰 내장 TTS (`flutter_tts`)
-- `screens/`: 화면 하나당 파일 하나 — `home`(음성 홈, 위 상태 클래스들을 묶음), `voice_settings`(음성 설정·다운로드 배너), `mail_list`(메일 메뉴·메일함), `mail_view`(메일 내용·요약), `compose`(답장·작성·말로 보내기), `connect`(메일 연동), `settings`(설정 메뉴·알림 설정), `help`(도움말·오류 코드 표 `problems`, `showProblem`·`ProblemText`. 새 오류 문구는 한 줄로 쓰고 끝에 `(X-00)` 코드를 붙인 뒤 설명은 여기에)
+- `screens/`: 화면 하나당 파일 하나 — `home`(음성 홈, 위 상태 클래스들을 묶음), `voice_settings`(음성 설정·다운로드 배너), `mail_list`(메일 메뉴·메일함), `mail_view`(메일 내용·요약), `compose`(답장·작성·말로 보내기), `connect`(메일 연동), `settings`(설정 메뉴·자동 실행·알림 설정), `help`(도움말·오류 코드 표 `problems`, `showProblem`·`ProblemText`. 새 오류 문구는 한 줄로 쓰고 끝에 `(X-00)` 코드를 붙인 뒤 설명은 여기에)
 
 ## 꼭 지킬 것
 - 폰 앱만. 데스크탑은 2026-10-15에 제외함. `isDesktop`·macOS 코드가 남아 있지만 새 기능은 넣지 않음.
